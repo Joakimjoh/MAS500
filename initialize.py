@@ -25,10 +25,6 @@ def initialize_robots():
         print("Robot 2 initialized successfully.")
 
         if robot1 and robot2:
-            # Move robots to initial positions
-            robot1.arm.go_to_home_pose()
-            robot2.arm.go_to_home_pose()
-
             print("Both robots are ready for commands!")
         else:
             print("Failed to initialize one or both robots.")
