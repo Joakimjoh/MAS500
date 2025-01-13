@@ -1,0 +1,2 @@
+detect = False
+frame = None
