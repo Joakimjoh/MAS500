@@ -5,6 +5,10 @@ from robot_control import pickup_stretch
 import globals
 import threading
 import time
+import pyrealsense2 as rs
+
+import cv2
+import numpy as np
 
 # Launch both robots
 launch_both_robots()
@@ -13,11 +17,12 @@ launch_both_robots()
 #robot1, robot2 = initialize_robots()
 
 # Start camera feed in a thread
-start_camera_thread = threading.Thread(target=start_camera)
-start_camera_thread.start()
+#start_camera_thread = threading.Thread(target=start_camera)
+#start_camera_thread.start()
     
 while True:
-    # globals.detect = True
+    time.sleep(3)
+    globals.detect = True
     if globals.detect:
         # Get right and left most corners
         left_pos, right_pos = right_left_corners()

@@ -1,47 +1,33 @@
-import cv2
+import pyrealsense2 as rs
 import numpy as np
-import globals
+import cv2
 import math
 
-# Camera calibration parameters (example values, replace with your calibration data)
-camera_matrix = np.array([
-    [1000, 0, 320],  # fx, 0, cx
-    [0, 1000, 240],  # 0, fy, cy
-    [0, 0, 1]        # 0,  0,  1
-], dtype=np.float32)
+# Configure RealSense pipeline
+pipeline = rs.pipeline()
+config = rs.config()
+config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
 
-# Dummy distortion coefficients (replace with actual values if needed)
-dist_coeffs = np.zeros(5)
+# Start streaming
+pipeline.start(config)
+print("Press 'q' to quit.")
 
-def calculate_xyz(pixel_coords, depth, camera_matrix):
-    """Calculate the (x, y, z) coordinates of an object in centimeters."""
-    u, v = pixel_coords
-    uv1 = np.array([u, v, 1], dtype=np.float32).reshape(3, 1)  # Pixel coordinates in homogeneous form
-    xyz_camera = np.dot(np.linalg.inv(camera_matrix), uv1) * depth
-    return xyz_camera.flatten() / 10  # Convert from mm to cm
+# Define a minimum contour area threshold
+MIN_CONTOUR_AREA = 5000  # Adjust this value based on your application
 
-def check_unfolded():
-    # Run Ai model to check if item is unfolded
-    print("Unfolded")
-
-def scan_item():
-    # Run Ai model to check what type of item and get two shoulder, hip or corner points for item
-    print("Scanning object")
-    globals.unfolded = True
-
-    return
-
-def check_line_straightness():
-    """
-    Function to check if the line in the current frame is straight.
-    It returns True the first time the line is determined to be straight.
-    Uses `globals.frame` for processing.
-    """
-    # Define a minimum contour area threshold
-    MIN_CONTOUR_AREA = 5000  # Adjust this value based on your application
-
+try:
     while True:
-        frame = globals.frame
+        # Wait for a frame
+        frames = pipeline.wait_for_frames()
+        color_frame = frames.get_color_frame()
+        if not color_frame:
+            continue
+
+        # Convert the RealSense frame to a NumPy array
+        frame = np.asanyarray(color_frame.get_data())
+
+        # Flip the frame horizontally
+        frame = cv2.flip(frame, 1)  # Invert the camera view (mirror effect)
 
         # Apply a slight blur to the frame to reduce noise
         frame = cv2.GaussianBlur(frame, (5, 5), 0)
@@ -49,6 +35,9 @@ def check_line_straightness():
         # Get frame dimensions
         height, width, _ = frame.shape
         center_x, center_y = width // 2, height // 2
+
+        # Draw the center (0, 0) point
+        cv2.circle(frame, (center_x, center_y), 5, (255, 255, 255), -1)  # White point for origin
 
         # Convert the frame to HSV color space
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -73,7 +62,8 @@ def check_line_straightness():
         # Filter out small contours
         contours = [contour for contour in contours if cv2.contourArea(contour) > MIN_CONTOUR_AREA]
 
-        # If any valid contours are found, process the largest one
+        # Process the largest contour if it exists
+            # If any valid contours are found, process the largest one
         if contours:
             # Get the largest contour by area
             largest_contour = max(contours, key=cv2.contourArea)
@@ -81,6 +71,9 @@ def check_line_straightness():
             # Approximate the contour to reduce noise
             epsilon = 0.01 * cv2.arcLength(largest_contour, True)
             largest_contour = cv2.approxPolyDP(largest_contour, epsilon, True)
+
+            # Draw the outline of the red object
+            cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 2)
 
             # Find corners relative to the center
             corners_relative = [(pt[0][0] - center_x, center_y - pt[0][1]) for pt in largest_contour]
@@ -96,10 +89,14 @@ def check_line_straightness():
             if left_points:
                 highest_left = max(left_points, key=lambda pt: pt[1])
                 highest_left_image = (highest_left[0] + center_x, center_y - highest_left[1])
+                # Draw the red point
+                cv2.circle(frame, highest_left_image, 5, (0, 0, 255), -1)  # Red point for highest negative x
 
             if right_points:
                 highest_right = max(right_points, key=lambda pt: pt[1])
                 highest_right_image = (highest_right[0] + center_x, center_y - highest_right[1])
+                # Draw the blue point
+                cv2.circle(frame, highest_right_image, 5, (255, 0, 0), -1)  # Blue point for highest positive x
 
             # Extract the contour segment connecting the red and blue points
             if highest_left_image and highest_right_image:
@@ -125,6 +122,9 @@ def check_line_straightness():
                 else:
                     chosen_segment = segment2
 
+                # Draw the chosen segment
+                cv2.polylines(frame, [chosen_segment], isClosed=False, color=(255, 255, 0), thickness=2)  # Cyan line
+
                 # Check if the segment is straight
                 x1, y1 = highest_left_image
                 x2, y2 = highest_right_image
@@ -144,103 +144,36 @@ def check_line_straightness():
 
                     # Maximum deviation
                     max_deviation = max(deviations)
-                    
+
+                    # Define a threshold for straightness
+                    threshold = 5.0  # Adjust as needed
+                    is_straight = max_deviation < threshold
+
+                    # Display the result
+                    if is_straight:
+                        cv2.putText(frame, "Line is Straight", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
+                    else:
+                        cv2.putText(frame, "Line is Not Straight", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
                 else:
                     # Vertical line case
                     max_deviation = max(abs(pt[0][0] - x1) for pt in chosen_segment)
+                    threshold = 5.0  # Adjust as needed
+                    is_straight = max_deviation < threshold
 
-                threshold = 5.0  # Adjust as needed
-                is_straight = max_deviation < threshold
+                    # Display the result
+                    if is_straight:
+                        cv2.putText(frame, "Line is Straight", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
+                    else:
+                        cv2.putText(frame, "Line is Not Straight", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
 
-                # Display the result
-                if is_straight:
-                    print("Straight")
-                    return True
-                else:
-                    print("Not Straight")
-                    return False
+        # Show the frame with annotations
+        cv2.imshow("Red Object Detection", frame)
 
-def right_left_corners():
-    # Convert to HSV for color segmentation
-    frame = globals.frame
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
-    # Define HSV range for red color
-    lower_red1 = np.array([0, 120, 70])     # Lower range for red
-    upper_red1 = np.array([10, 255, 255])  # Upper range for red
-    lower_red2 = np.array([170, 120, 70])  # Second lower range for red
-    upper_red2 = np.array([180, 255, 255]) # Second upper range for red
-
-    # Create masks for red color
-    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-    mask = cv2.bitwise_or(mask1, mask2)
-
-    # Find contours of red objects
-    contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-    # Get the frame dimensions to define the center
-    frame_height, frame_width = frame.shape[:2]
-    center_x = frame_width // 2
-    center_y = frame_height // 2
-
-    # Initialize variables to store the relative left-most and right-most points
-    left_most_relative = None
-    right_most_relative = None
-
-    if contours:
-        for contour in contours:
-            if cv2.contourArea(contour) < 50:  # Ignore small contours
-                continue
-
-            # Find the extreme points in the contour
-            left_point = tuple(contour[contour[:, :, 0].argmin()][0])
-            right_point = tuple(contour[contour[:, :, 0].argmax()][0])
-
-            # Convert to coordinates relative to the center of the frame
-            left_point_relative = (left_point[0] - center_x, center_y - left_point[1])
-            right_point_relative = (right_point[0] - center_x, center_y - right_point[1])
-
-            # Update left-most and right-most points globally
-            if (left_most_relative is None or 
-                left_point_relative[0] < left_most_relative[0]):
-                left_most_relative = left_point_relative
-            if (right_most_relative is None or 
-                right_point_relative[0] > right_most_relative[0]):
-                right_most_relative = right_point_relative
-
-    # Save the detected points
-    if left_most_relative and right_most_relative:
-        print(f"Left-most point relative to center: {left_most_relative}")
-        print(f"Right-most point relative to center: {right_most_relative}")
-    
-    return left_most_relative, right_most_relative
-
-def start_camera():
-    cap = cv2.VideoCapture(2)
-
-    if not cap.isOpened():
-        print("Error: Camera could not be opened.")
-        return
-    
-    print("Camera opened")
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Error: Frame could not be read.")
-            break
-
-        frame = cv2.flip(frame, 1) # Invert the camera view (mirror effect)
-        globals.frame = frame
-
-        # Display the frame
-        cv2.imshow("Camera Feed", frame)
-
-        # Exit on pressing 'q'
+        # Break the loop on pressing 'q'
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    # Stop camera
-    cap.release()
+finally:
+    # Stop streaming and release resources
+    pipeline.stop()
     cv2.destroyAllWindows()

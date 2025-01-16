@@ -3,7 +3,7 @@ import numpy as np
 import math
 
 # Initialize the camera
-cap = cv2.VideoCapture(1)  # Use 0 for the default camera
+cap = cv2.VideoCapture(2)  # Use 0 for the default camera
 
 if not cap.isOpened():
     raise Exception("Could not open the camera.")

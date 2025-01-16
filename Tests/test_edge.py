@@ -1,121 +1,139 @@
-import pyrealsense2 as rs
-import numpy as np
 import cv2
-import scipy.optimize
+import numpy as np
+import pyrealsense2 as rs
 
-# Configure depth and color streams
+# Initialize RealSense pipeline
 pipeline = rs.pipeline()
 config = rs.config()
 
-# Enable depth and color streams
-config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+# Enable reduced-resolution streams
+config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)  # Depth stream at 640x480
+config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)  # RGB stream at 640x480
 
-# Start the pipeline
-pipeline_profile = pipeline.start(config)
+# Align depth to color
+align_to = rs.stream.color
+align = rs.align(align_to)
 
-# Configure the depth sensor for short-range preset
-depth_sensor = pipeline_profile.get_device().first_depth_sensor()
-if depth_sensor.supports(rs.option.visual_preset):
-    depth_sensor.set_option(rs.option.visual_preset, rs.l500_visual_preset.short_range)
+# Start streaming
+pipeline.start(config)
 
-# Get the depth scale from the device (meters to mm conversion)
-depth_scale = depth_sensor.get_depth_scale()
-print(f"Depth Scale: {depth_scale} meters per unit")
+# Adjust RGB sensor settings
+device = pipeline.get_active_profile().get_device()
+depth_sensor = device.query_sensors()[0]  # Depth sensor
+rgb_sensor = device.query_sensors()[1]  # RGB sensor
+
+rgb_sensor.set_option(rs.option.saturation, 30)  # Set saturation to 30
+rgb_sensor.set_option(rs.option.sharpness, 100)  # Set sharpness to 100
+depth_sensor.set_option(rs.option.visual_preset, 5)
+
+# Offset for depth measurement
+offset = 5
 
 try:
     while True:
-        # Wait for a coherent pair of frames: depth and color
+        # Wait for aligned frames
         frames = pipeline.wait_for_frames()
-        depth_frame = frames.get_depth_frame()
-        color_frame = frames.get_color_frame()
+        aligned_frames = align.process(frames)
 
-        if not depth_frame or not color_frame:
+        # Get RGB and aligned depth frames
+        color_frame = aligned_frames.get_color_frame()
+        depth_frame = aligned_frames.get_depth_frame()
+
+        if not color_frame or not depth_frame:
             continue
 
         # Convert frames to numpy arrays
+        frame = np.asanyarray(color_frame.get_data())
         depth_image = np.asanyarray(depth_frame.get_data())
-        depth_image_mm = (depth_image * depth_scale * 1000).astype(np.float64)  # Convert to mm
-        color_image = np.asanyarray(color_frame.get_data())
 
-        # Apply median blur to reduce noise
-        depth_image_mm = cv2.medianBlur(depth_image_mm.astype(np.uint8), 5)
+        # Normalize depth image for display
+        depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
 
-        # Convert the color image to HSV
-        hsv_image = cv2.cvtColor(color_image, cv2.COLOR_BGR2HSV)
+        # Convert RGB frame to HSV for color segmentation
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        # Define the range for detecting red color
-        lower_red1 = np.array([0, 120, 70])  # Lower range for red
-        upper_red1 = np.array([10, 255, 255])  # Upper range for red
-        lower_red2 = np.array([170, 120, 70])  # Second range for red
-        upper_red2 = np.array([180, 255, 255])  # Second upper range for red
+        # Define HSV range for red color
+        lower_red1 = np.array([0, 120, 70])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([170, 120, 70])
+        upper_red2 = np.array([180, 255, 255])
 
-        # Create masks to detect red color
-        mask1 = cv2.inRange(hsv_image, lower_red1, upper_red1)
-        mask2 = cv2.inRange(hsv_image, lower_red2, upper_red2)
-        red_mask = mask1 | mask2
+        # Create masks for red color and reduce noise
+        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+        mask = cv2.bitwise_or(mask1, mask2)
 
-        # Find contours of the red objects
-        contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Apply Gaussian blur and morphological operations to reduce noise
+        mask = cv2.GaussianBlur(mask, (5, 5), 0)
+        kernel = np.ones((5, 5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
 
-        for contour in contours:
-            if cv2.contourArea(contour) > 500:  # Ignore small objects
-                # Draw the outline of the red object
-                cv2.drawContours(color_image, [contour], -1, (0, 255, 0), 2)
+        # Find contours of red objects
+        contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
-                # Create a mask for the current red object
-                object_mask = np.zeros_like(depth_image_mm, dtype=np.uint8)
-                cv2.drawContours(object_mask, [contour], -1, 255, thickness=cv2.FILLED)
+        if contours:
+            # Sort contours by area in descending order
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)
 
-                # Mask the depth image
-                depth_object = cv2.bitwise_and(depth_image_mm, depth_image_mm, mask=object_mask)
+            # Filter out contours smaller than 5000 in area
+            contours = [c for c in contours if cv2.contourArea(c) > 5000]
 
-                # Fit a plane to normalize depth
-                points = np.column_stack(np.nonzero(depth_object))
-                depths = depth_object[points[:, 0], points[:, 1]]
+            if contours:
+                # Use the largest contour after filtering
+                largest_contour = contours[0]
 
-                def plane(params, x, y):
-                    a, b, c = params
-                    return a * x + b * y + c
+                # Outline the red object on the RGB frame
+                cv2.drawContours(frame, [largest_contour], -1, (255, 0, 0), 2)  # Blue outline
 
-                def error(params, x, y, z):
-                    return z - plane(params, x, y)
+                # Find the extreme points in the largest contour
+                left_point = tuple(largest_contour[largest_contour[:, :, 0].argmin()][0])
+                right_point = tuple(largest_contour[largest_contour[:, :, 0].argmax()][0])
 
-                x, y = points[:, 1], points[:, 0]
-                params, _ = scipy.optimize.leastsq(error, [0, 0, 1], args=(x, y, depths))
-                a, b, c = params
+                # Adjust the points inward by the offset
+                left_point_inward = (min(left_point[0] + offset, frame.shape[1] - 1), left_point[1])
+                right_point_inward = (max(right_point[0] - offset, 0), right_point[1])
 
-                # Generate a full-size plane for the depth image
-                xx, yy = np.meshgrid(np.arange(depth_object.shape[1]), np.arange(depth_object.shape[0]))
-                fitted_plane = a * xx + b * yy + c
+                # Get Z-coordinates (depth) for the adjusted points using aligned depth frame
+                left_z = depth_frame.get_distance(left_point_inward[0], left_point_inward[1])
+                right_z = depth_frame.get_distance(right_point_inward[0], right_point_inward[1])
 
-                # Normalize the depth image using the fitted plane
-                normalized_depth = np.where(depth_object > 0, depth_object - fitted_plane, 0)
+                # Get camera intrinsics
+                profile = pipeline.get_active_profile()
+                depth_intrinsics = profile.get_stream(rs.stream.depth).as_video_stream_profile().get_intrinsics()
+                fx, fy = depth_intrinsics.fx, depth_intrinsics.fy
+                cx, cy = depth_intrinsics.ppx, depth_intrinsics.ppy
 
-                # Compute gradients for edge detection
-                sobel_x = cv2.Sobel(normalized_depth, cv2.CV_64F, 1, 0, ksize=3)
-                sobel_y = cv2.Sobel(normalized_depth, cv2.CV_64F, 0, 1, ksize=3)
-                depth_edges = np.sqrt(sobel_x**2 + sobel_y**2)
-                depth_edges = (depth_edges > 5).astype(np.uint8)  # Threshold for edge detection
+                # Calculate real-world coordinates for the left point
+                left_x_meters = (left_point_inward[0] - cx) * left_z / fx
+                left_y_meters = (left_point_inward[1] - cy) * left_z / fy
 
-                # Morphological operations for cleaner edges
-                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-                depth_edges = cv2.morphologyEx(depth_edges, cv2.MORPH_CLOSE, kernel)
+                # Calculate real-world coordinates for the right point
+                right_x_meters = (right_point_inward[0] - cx) * right_z / fx
+                right_y_meters = (right_point_inward[1] - cy) * right_z / fy
 
-                # Overlay edges on the color image
-                depth_edges_visual = (depth_edges * 255).astype(np.uint8)
-                depth_edges_colored = cv2.cvtColor(depth_edges_visual, cv2.COLOR_GRAY2BGR)
-                depth_edges_colored[np.where((depth_edges_colored != [0, 0, 0]).all(axis=2))] = [255, 255, 255]
+                # Mark the adjusted points on the RGB frame
+                cv2.circle(frame, left_point_inward, 5, (0, 255, 0), -1)  # Green circle for left point
+                cv2.circle(frame, right_point_inward, 5, (0, 0, 255), -1)  # Red circle for right point
+                
+                # Display real-world coordinates of the left and right points in the top-left corner of the frame
+                cv2.putText(frame, f"L: ({left_x_meters:.2f}, {left_y_meters:.2f}, {left_z:.2f})m", 
+                            (10, 30),  # Top-left corner of the frame
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
 
-                color_image = cv2.addWeighted(color_image, 0.8, depth_edges_colored, 0.5, 0)
+                cv2.putText(frame, f"R: ({right_x_meters:.2f}, {right_y_meters:.2f}, {right_z:.2f})m", 
+                            (10, 60),  # Slightly below the first text
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
 
-        # Display the color image with depth edges
-        cv2.imshow("Depth Edges on Red Object", color_image)
+        # Display the frames
+        cv2.imshow("Color Frame with Red Object Outlined", frame)
+        cv2.imshow("Depth Frame", depth_colormap)
 
-        # Exit on 'q' key press
+        # Break loop on 'q' key press
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
 finally:
+    # Stop the pipeline and close OpenCV windows
     pipeline.stop()
     cv2.destroyAllWindows()
