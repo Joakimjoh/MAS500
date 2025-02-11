@@ -1,47 +1,54 @@
-#from initialize import initialize_robots
-from launch import launch_both_robots
-from cam_dec import start_camera, scan_item, right_left_corners, check_unfolded
-from robot_control import pickup_stretch
-import globals
-import threading
-import time
+from initialize import initialize_camera
+from camera_detection import detect_red_object
+from data import get_depth_data, get_frames, get_xyz
+from camera import display_point_on_frame
 import pyrealsense2 as rs
-
 import cv2
-import numpy as np
 
-# Launch both robots
-launch_both_robots()
+def get_x_coordinate(u, v, depth_frame, intrinsics_depth):
+    """
+    Convert pixel (u, v) in the depth image to real-world (X, Y, Z) coordinates.
+    Returns the X coordinate in meters.
+    """
+    depth_value = depth_frame.get_distance(u, v)  # Get depth value in meters
+    if depth_value == 0:
+        return None  # No valid depth data
 
-# Initialize the robots
-#robot1, robot2 = initialize_robots()
+    # Convert (u, v, depth) to real-world coordinates
+    point = rs.rs2_deproject_pixel_to_point(intrinsics_depth, [u, v], depth_value)
+    x_m = point[0]  # X coordinate in meters
+    return x_m
 
-# Start camera feed in a thread
-#start_camera_thread = threading.Thread(target=start_camera)
-#start_camera_thread.start()
-    
-while True:
-    time.sleep(3)
-    globals.detect = True
-    if globals.detect:
-        # Get right and left most corners
-        left_pos, right_pos = right_left_corners()
-        # Move robot arms to corners pick up stretch till line between is straight and lay down
-        pickup_stretch(left_pos, right_pos)
+# Initialize camera
+pipeline, align, intrinsics_depth = initialize_camera()
 
-        # Find out item type and move until unfolded
-        while True:
-            left_corner, right_corner, item_type = scan_item() # Scan with Ai model to check what type of item and get corners
+# Get depth data for table
+depth_data = get_depth_data(pipeline, align)
 
-            if item_type == 1:
-                print("T-shirt")
-            elif item_type == 2:
-                print("Sweater")
+while True:        
+    # Get depth and color frame
+    depth_frame, color_image = get_frames(pipeline, align)
 
-            # Move robot arms to corners pick up stretch till line between is straight and lay down
-            pickup_stretch(left_corner, right_corner)
+    # Detect red objects and get their coordinates
+    left_depth, right_depth, left_point, right_point, left_point_y, right_point_y, lrel_x, lrel_y, rrel_x, rrel_y = detect_red_object(color_image, depth_frame, pipeline, depth_data)
 
-            # If item unfolded, reset
-            if check_unfolded():
-                globals.detect = False
-                break
+    closest_point_left = depth_data.get(left_point, None)
+    closest_point_right = depth_data.get(right_point, None)
+
+    closest_point_left_y = depth_data.get(left_point_y, None)
+    closest_point_right_y = depth_data.get(right_point_y, None)
+
+    if closest_point_left and closest_point_right and closest_point_left_y and closest_point_right_y and lrel_x and rrel_x != None:
+        left_point_m = get_xyz(left_depth, closest_point_left, lrel_x)
+        right_point_m = get_xyz(right_depth, closest_point_right, rrel_x)
+        display_point_on_frame(color_image, left_point, right_point, left_point_m, right_point_m)
+    else:
+        # Even if no red object is detected, still display the frame
+        cv2.imshow("Frame with Red Object", color_image)
+
+    # Exit condition (press 'q' to quit)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        print("Exiting.")
+        break
+
+cv2.destroyAllWindows()

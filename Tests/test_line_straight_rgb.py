@@ -3,19 +3,9 @@ import numpy as np
 import cv2
 import math
 
-# Configure RealSense pipeline
-pipeline = rs.pipeline()
-config = rs.config()
-config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-
-# Start streaming
-pipeline.start(config)
-print("Press 'q' to quit.")
-
+def check_line_straight(pipeline, left_point = (200, 200), right_point = (100, 200)):
 # Define a minimum contour area threshold
-MIN_CONTOUR_AREA = 5000  # Adjust this value based on your application
-
-try:
+    MIN_CONTOUR_AREA = 5000  # Adjust this value based on your application
     while True:
         # Wait for a frame
         frames = pipeline.wait_for_frames()
@@ -25,12 +15,6 @@ try:
 
         # Convert the RealSense frame to a NumPy array
         frame = np.asanyarray(color_frame.get_data())
-
-        # Flip the frame horizontally
-        frame = cv2.flip(frame, 1)  # Invert the camera view (mirror effect)
-
-        # Apply a slight blur to the frame to reduce noise
-        frame = cv2.GaussianBlur(frame, (5, 5), 0)
 
         # Get frame dimensions
         height, width, _ = frame.shape
@@ -72,108 +56,67 @@ try:
             epsilon = 0.01 * cv2.arcLength(largest_contour, True)
             largest_contour = cv2.approxPolyDP(largest_contour, epsilon, True)
 
-            # Draw the outline of the red object
-            cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 2)
+            left_point = (300, 200)
+            right_point = (400, 300)
 
-            # Find corners relative to the center
-            corners_relative = [(pt[0][0] - center_x, center_y - pt[0][1]) for pt in largest_contour]
+            # Find the closest point to left_point in the contour
+            closest_left_index = np.argmin([np.linalg.norm(np.array((pt[0][0], pt[0][1])) - np.array(left_point)) for pt in largest_contour])
+            closest_left_point = largest_contour[closest_left_index][0]
 
-            # Filter points by x-coordinate (negative and positive)
-            left_points = [pt for pt in corners_relative if pt[0] < 0]  # Negative x
-            right_points = [pt for pt in corners_relative if pt[0] > 0]  # Positive x
+            # Find the closest point to right_point in the contour
+            closest_right_index = np.argmin([np.linalg.norm(np.array((pt[0][0], pt[0][1])) - np.array(right_point)) for pt in largest_contour])
+            closest_right_point = largest_contour[closest_right_index][0]
 
-            # Find the highest y-value for each group
-            highest_left_image = None
-            highest_right_image = None
+            # Draw the closest points on the image
+            cv2.circle(frame, tuple(closest_left_point), 5, (255, 0, 0), -1)  # Red point
+            cv2.circle(frame, tuple(closest_right_point), 5, (255, 0, 0), -1)  # Blue point
 
-            if left_points:
-                highest_left = max(left_points, key=lambda pt: pt[1])
-                highest_left_image = (highest_left[0] + center_x, center_y - highest_left[1])
-                # Draw the red point
-                cv2.circle(frame, highest_left_image, 5, (0, 0, 255), -1)  # Red point for highest negative x
+            cv2.circle(frame, tuple(left_point), 5, (0, 0, 255), -1)  # Red point
+            cv2.circle(frame, tuple(right_point), 5, (0, 0, 255), -1)  # Blue point
 
-            if right_points:
-                highest_right = max(right_points, key=lambda pt: pt[1])
-                highest_right_image = (highest_right[0] + center_x, center_y - highest_right[1])
-                # Draw the blue point
-                cv2.circle(frame, highest_right_image, 5, (255, 0, 0), -1)  # Blue point for highest positive x
+            # Ensure proper order (left -> right)
+            if closest_left_index > closest_right_index:
+                closest_left_index, closest_right_index = closest_right_index, closest_left_index
 
-            # Extract the contour segment connecting the red and blue points
-            if highest_left_image and highest_right_image:
-                # Find the indices of the points in the contour
-                left_index = np.argmin(
-                    [np.linalg.norm(np.array((pt[0][0], pt[0][1])) - np.array(highest_left_image)) for pt in largest_contour]
-                )
-                right_index = np.argmin(
-                    [np.linalg.norm(np.array((pt[0][0], pt[0][1])) - np.array(highest_right_image)) for pt in largest_contour]
-                )
+            # Extract the two possible segments
+            segment1 = largest_contour[closest_left_index:closest_right_index + 1]
+            segment2 = np.concatenate((largest_contour[closest_right_index:], largest_contour[:closest_left_index + 1]))
 
-                # Ensure proper order (left -> right)
-                if left_index > right_index:
-                    left_index, right_index = right_index, left_index
+            # Choose the shorter segment
+            if cv2.arcLength(segment1, False) < cv2.arcLength(segment2, False):
+                chosen_segment = segment1
+            else:
+                chosen_segment = segment2
 
-                # Extract the two possible segments
-                segment1 = largest_contour[left_index:right_index + 1]
-                segment2 = np.concatenate((largest_contour[right_index:], largest_contour[:left_index + 1]))
+            # Draw the chosen segment
+            cv2.polylines(frame, [chosen_segment], isClosed=False, color=(255, 255, 0), thickness=2)  # Cyan line
 
-                # Choose the shorter segment
-                if cv2.arcLength(segment1, False) < cv2.arcLength(segment2, False):
-                    chosen_segment = segment1
-                else:
-                    chosen_segment = segment2
+            # Check if the segment is straight
+            x1, y1 = closest_left_point
+            x2, y2 = closest_right_point
 
-                # Draw the chosen segment
-                cv2.polylines(frame, [chosen_segment], isClosed=False, color=(255, 255, 0), thickness=2)  # Cyan line
+            # Calculate the line equation: y = mx + c
+            m = (y2 - y1) / (x2 - x1)  # Slope
+            c = y1 - m * x1            # Intercept
 
-                # Check if the segment is straight
-                x1, y1 = highest_left_image
-                x2, y2 = highest_right_image
+            # Calculate the deviation for each point in the segment
+            deviations = []
+            for pt in chosen_segment:
+                px, py = pt[0]
+                # Distance from point (px, py) to the line y = mx + c
+                distance = abs(m * px - py + c) / math.sqrt(m**2 + 1)
+                deviations.append(distance)
 
-                # Calculate the line equation: y = mx + c
-                if x2 != x1:
-                    m = (y2 - y1) / (x2 - x1)  # Slope
-                    c = y1 - m * x1            # Intercept
+            # Maximum deviation
+            max_deviation = max(deviations)
 
-                    # Calculate the deviation for each point in the segment
-                    deviations = []
-                    for pt in chosen_segment:
-                        px, py = pt[0]
-                        # Distance from point (px, py) to the line y = mx + c
-                        distance = abs(m * px - py + c) / math.sqrt(m**2 + 1)
-                        deviations.append(distance)
+            # Define a threshold for straightness
+            threshold = 5.0  # Adjust as needed
+            is_straight = max_deviation < threshold
 
-                    # Maximum deviation
-                    max_deviation = max(deviations)
+            if is_straight:
+                return True
 
-                    # Define a threshold for straightness
-                    threshold = 5.0  # Adjust as needed
-                    is_straight = max_deviation < threshold
+test = check_line_straight(pipeline)
 
-                    # Display the result
-                    if is_straight:
-                        cv2.putText(frame, "Line is Straight", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
-                    else:
-                        cv2.putText(frame, "Line is Not Straight", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
-                else:
-                    # Vertical line case
-                    max_deviation = max(abs(pt[0][0] - x1) for pt in chosen_segment)
-                    threshold = 5.0  # Adjust as needed
-                    is_straight = max_deviation < threshold
-
-                    # Display the result
-                    if is_straight:
-                        cv2.putText(frame, "Line is Straight", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
-                    else:
-                        cv2.putText(frame, "Line is Not Straight", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
-
-        # Show the frame with annotations
-        cv2.imshow("Red Object Detection", frame)
-
-        # Break the loop on pressing 'q'
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-finally:
-    # Stop streaming and release resources
-    pipeline.stop()
-    cv2.destroyAllWindows()
+print(test)

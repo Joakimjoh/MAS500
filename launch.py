@@ -31,9 +31,9 @@ def launch_both_robots():
             return None
 
     # Define robot names and models
-    robot1_name = "vx250_robot1"
-    robot2_name = "vx250_robot2"
-    robot_model = "vx250"
+    robot1_name = "wx250s_robot1"
+    robot2_name = "wx250s_robot2"
+    robot_model = "wx250s"
 
     # Launch the robots
     process1 = launch_robot(robot1_name, robot_model)

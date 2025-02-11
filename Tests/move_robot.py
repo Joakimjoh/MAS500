@@ -1,11 +1,11 @@
 from interbotix_xs_modules.arm import InterbotixArm
 
-def move_to_xyz_with_offset(camera_xyz, robot_model="vx250", offset=(0.3, -0.2, 0.0), gripper_open_width=0.05, gripper_close_width=0.01):
+def move_to_xyz_with_offset(camera_xyz, robot_model="wx250s", offset=(0.3, -0.2, 0.0), gripper_open_width=0.05, gripper_close_width=0.01):
     """
     Moves the Interbotix WidowX-250 to a position adjusted by an offset and operates the gripper.
 
     Parameters:
-        robot_model (str): The model of the robot arm (e.g., "wx250").
+        robot_model (str): The model of the robot arm (e.g., "wx250s").
         camera_xyz (tuple): The XYZ coordinates detected by the camera in meters (x, y, z).
         offset (tuple): The offset to apply to the camera coordinates (x_offset, y_offset, z_offset) in meters.
         gripper_open_width (float): The width to open the gripper (in meters).

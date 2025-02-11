@@ -1,2 +1,0 @@
-detect = False
-frame = None
