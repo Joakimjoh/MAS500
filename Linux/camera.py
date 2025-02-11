@@ -1,3 +1,5 @@
+import pyrealsense2 as rs
+import numpy as np
 import cv2
 
 def display_point_on_frame(color_image, left_point, right_point, left_point_m, right_point_m):
@@ -24,3 +26,27 @@ def display_point_on_frame(color_image, left_point, right_point, left_point_m, r
     cv2.putText(color_image, f"Left X: {left_point_m[0]:.3f}, Left Y: {left_point_m[1]:.3f}, Left Z: {left_point_m[2]:.3f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
     cv2.putText(color_image, f"Right X: {right_point_m[0]:.3f}, Right Y: {right_point_m[1]:.3f}, Right Z: {right_point_m[2]:.3f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
+def get_intrinsics(pipeline):
+    profile = pipeline.get_active_profile()
+    depth_stream = profile.get_stream(rs.stream.depth)
+    color_stream = profile.get_stream(rs.stream.color)
+    intrinsics_depth = depth_stream.as_video_stream_profile().get_intrinsics()
+    intrinsics_color = color_stream.as_video_stream_profile().get_intrinsics()
+    depth_to_color_extrinsics = depth_stream.get_extrinsics_to(color_stream)
+
+    return intrinsics_depth, intrinsics_color, depth_to_color_extrinsics
+
+def get_frames(pipeline, align):
+    frames = pipeline.wait_for_frames()
+    aligned_frames = align.process(frames)
+
+    depth_frame = aligned_frames.get_depth_frame()
+    color_frame = aligned_frames.get_color_frame()
+
+    color_frame = np.asanyarray(color_frame.get_data())
+
+    return depth_frame, color_frame
+
+def stream_frame(frame, title):
+    cv2.imshow(title, frame)

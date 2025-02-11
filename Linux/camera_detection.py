@@ -1,50 +1,21 @@
+from data import get_depth_pixel, meter_to_pixel, pixel_to_meter, transform_camera_to_world, transform_world_to_camera
+from camera import get_intrinsics, get_frames
 import numpy as np
-import cv2
-import pyrealsense2 as rs
-import parameters
 import math
-from data import get_frames
-
-# Initialize global variables for previous points (smoothing)
-prev_left_point = None
-prev_right_point = None
-alpha = 0.7  # Smoothing factor (higher = more stable, lower = more responsive)
+import cv2
 
 is_straight = False
 
-def smooth_point(new_point, prev_point, alpha=0.7):
-    """Apply exponential smoothing to stabilize points."""
-    if prev_point is None:
-        return new_point  # No smoothing needed for the first frame
-    return (
-        int(prev_point[0] * alpha + new_point[0] * (1 - alpha)),
-        int(prev_point[1] * alpha + new_point[1] * (1 - alpha))
-    )
-
-def get_depth_data_extremes(depth_data):
-    """Get the extreme min/max x and y values from depth data dictionary."""
-    x_vals = [key[0] for key in depth_data.keys()]  # Extract x values
-    y_vals = [key[1] for key in depth_data.keys()]  # Extract y values
-
-    return min(x_vals), max(x_vals), min(y_vals), max(y_vals)
-
-def detect_red_object(color_image, depth_frame, pipeline, depth_data):
+def detect_red_object(pipeline, align, profile, depth_data):
     """Detect red objects and get adjusted points inside the contour."""
     global prev_left_point, prev_right_point  # Use previous frame points
 
-    profile = pipeline.get_active_profile()
-    depth_stream = profile.get_stream(rs.stream.depth)
-    color_stream = profile.get_stream(rs.stream.color)
-    intrinsics_depth = depth_stream.as_video_stream_profile().get_intrinsics()
-    intrinsics_color = color_stream.as_video_stream_profile().get_intrinsics()
-    depth_to_color_extrinsics = depth_stream.get_extrinsics_to(color_stream)
+    depth_frame, color_frame = get_frames(pipeline, align)
 
-    # Get the center of the image
-    center_x = color_image.shape[1] // 2
-    center_y = color_image.shape[0] // 2
+    intrinsics_depth, intrinsics_color, depth_to_color_extrinsics = get_intrinsics(pipeline)
 
     # Convert image to HSV
-    hsv = cv2.cvtColor(color_image, cv2.COLOR_BGR2HSV)
+    hsv = cv2.cvtColor(color_frame, cv2.COLOR_BGR2HSV)
 
     # Define range for red color
     lower_red1 = np.array([0, 120, 70])
@@ -76,7 +47,7 @@ def detect_red_object(color_image, depth_frame, pipeline, depth_data):
             largest_contour = contours[0]
 
             # Draw full outline without simplification
-            cv2.drawContours(color_image, [largest_contour], -1, (255, 0, 0), 2)  # Blue outline
+            cv2.drawContours(color_frame, [largest_contour], -1, (255, 0, 0), 2)  # Blue outline
 
             # Compute centroid of the contour
             M = cv2.moments(largest_contour)
@@ -84,7 +55,7 @@ def detect_red_object(color_image, depth_frame, pipeline, depth_data):
                 centroid_x = int(M["m10"] / M["m00"])
                 centroid_y = int(M["m01"] / M["m00"])
             else:
-                return None, None, None, None, None, None  # Avoid division by zero
+                return None, None, None, None, None, None, None, None  # Avoid division by zero
 
             # Find extreme left and right points
             left_point = tuple(largest_contour[largest_contour[:, :, 0].argmin()][0])
@@ -100,12 +71,8 @@ def detect_red_object(color_image, depth_frame, pipeline, depth_data):
             left_point_inside = move_towards_centroid(left_point, (centroid_x, centroid_y))
             right_point_inside = move_towards_centroid(right_point, (centroid_x, centroid_y))
 
-            # Apply smoothing to avoid jitter
-            left_point_inside = smooth_point(left_point_inside, prev_left_point)
-            right_point_inside = smooth_point(right_point_inside, prev_right_point)
-
             # Find the center of the frame
-            cx, cy = color_image.shape[1] // 2, color_image.shape[0] // 2
+            cx, cy = color_frame.shape[1] // 2, color_frame.shape[0] // 2
 
             # Get corresponding depth pixel
             depth_pixel_center = get_depth_pixel(cx, cy, depth_frame, intrinsics_depth, intrinsics_color, depth_to_color_extrinsics, profile)
@@ -120,8 +87,8 @@ def detect_red_object(color_image, depth_frame, pipeline, depth_data):
                     cx_m, cy_m, cz_m = center_coords
 
                     # Draw a circle at the center point
-                    cv2.circle(color_image, (cx, cy), 5, (255, 0, 0), -1)  # Blue circle
-                    cv2.putText(color_image, f"({cx_m:.3f}, {cy_m:.3f}, {cz_m:.3f})", 
+                    cv2.circle(color_frame, (cx, cy), 5, (255, 0, 0), -1)  # Blue circle
+                    cv2.putText(color_frame, f"({cx_m:.3f}, {cy_m:.3f}, {cz_m:.3f})", 
                                 (cx + 10, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
 
 
@@ -156,18 +123,28 @@ def detect_red_object(color_image, depth_frame, pipeline, depth_data):
                     rrel_x = rx_m - cx_m
                     rrel_y = ry_m - cy_m
 
-                    #print(f"Leftmost Red Object Relative Position: ΔX={lrel_x:.3f}m, ΔY={lrel_y:.3f}m")
-                    #print(f"Rightmost Red Object Relative Position: ΔX={rrel_x:.3f}m, ΔY={rrel_y:.3f}m")
+
+            # Transform from meter coordinates to pixel coordinates
+            lx_m = lrel_x + cx_m
+            ly_m = lrel_y + cy_m
+
+            world_coords_left = transform_world_to_camera((lx_m, ly_m, lz_m), depth_data)
+
+            ldu, ldv = meter_to_pixel(world_coords_left, intrinsics_depth)
+
+            depth_pixel_left = ldu, ldv
+
+            print(depth_pixel_left)
+
+            # Draw a circle at the center point
+            cv2.circle(color_frame, depth_pixel_left, 5, (255, 0, 0), -1)  # Blue circle
 
             # Update previous points for next frame
             prev_left_point, prev_right_point = left_point_inside, right_point_inside
 
             # Transform coordinates to be centered at (0, 0)
-            left_point_transformed = (left_point_inside[0] - center_x, left_point_inside[1] - center_y)
-            right_point_transformed = (right_point_inside[0] - center_x, right_point_inside[1] - center_y)
-
-            left_point_y = (0, left_point_transformed[1])
-            right_point_y = (0, right_point_transformed[1])
+            left_point_transformed = (left_point_inside[0] - cx, left_point_inside[1] - cy)
+            right_point_transformed = (right_point_inside[0] - cx, right_point_inside[1] - cy)
 
             # Get depth at the adjusted points (median filter for stability)
             depth_values = [
@@ -177,106 +154,11 @@ def detect_red_object(color_image, depth_frame, pipeline, depth_data):
             left_depth, right_depth = np.median(depth_values), np.median(depth_values)  # Use median for stability
 
             if lrel_x and lrel_y and rrel_x and rrel_y: 
-                return left_depth, right_depth, left_point_transformed, right_point_transformed, left_point_y, right_point_y, lrel_x, lrel_y, rrel_x, rrel_y
+                return left_depth, right_depth, left_point_transformed, right_point_transformed, lrel_x, lrel_y, rrel_x, rrel_y
 
-    return None, None, None, None, None, None, None, None, None, None  # No red object found
+    return None, None, None, None, None, None, None, None   # No red object found
 
-def pixel_to_meter(u, v, depth_frame, intrinsics):
-    """Convert depth pixel (du, dv) to real-world (X, Y, Z) in meters using RealSense function."""
-    depth_value = depth_frame.get_distance(u, v)  # Depth in meters
-    if depth_value == 0:
-        return None  # No valid depth data
-
-    point = rs.rs2_deproject_pixel_to_point(intrinsics, [u, v], depth_value)
-    return tuple(point)  # Returns (X, Y, Z) in meters
-
-def get_depth_pixel(u, v, depth_frame, intrinsics_depth, intrinsics_color, depth_to_color_extrinsics, profile):
-    """Convert color pixel (u, v) to corresponding depth pixel (du, dv)."""
-    depth_sensor = profile.get_device().first_depth_sensor()
-    depth_scale = depth_sensor.get_depth_scale()
-
-    depth_value = depth_frame.get_distance(u, v)  # Get depth at color pixel
-    if depth_value == 0:
-        return None  # No valid depth data
-
-    # Compute color-to-depth extrinsics (inverse of depth-to-color)
-    color_to_depth_extrinsics = rs.extrinsics()
-    color_to_depth_extrinsics.rotation = np.linalg.inv(np.array(depth_to_color_extrinsics.rotation).reshape(3, 3)).flatten().tolist()
-    color_to_depth_extrinsics.translation = (-np.array(depth_to_color_extrinsics.translation)).tolist()
-
-    # Convert color pixel to depth pixel
-    depth_pixel = rs.rs2_project_color_pixel_to_depth_pixel(
-        depth_frame.as_frame().get_data(), depth_scale, 0.1, 4.0,  # Min & max depth range
-        intrinsics_depth, intrinsics_color, depth_to_color_extrinsics, color_to_depth_extrinsics,
-        [u, v]
-    )
-
-    return tuple(map(int, depth_pixel))  # Ensure integers for pixel indices
-
-def transform_camera_to_world(point, depth_data):
-    """Convert RealSense (X, Y, Z) to world coordinates, correcting for tilt."""
-    X, Y, Z = point
-
-    closest_point = depth_data.get(point, None)
-
-    if closest_point != None:
-        closest_point_depth = closest_point['depth']
-
-        theta = math.degrees(math.acos(parameters.CAMERA_HEIGHT / closest_point_depth))
-        theta_rad = math.radians(theta)
-
-        # Rotation matrix for tilt correction around X-axis
-        rotation_matrix = np.array([
-            [1, 0, 0],
-            [0, np.cos(theta_rad), -np.sin(theta_rad)],
-            [0, np.sin(theta_rad), np.cos(theta_rad)]
-        ])
-
-        # Apply the rotation matrix
-        world_coords = np.dot(rotation_matrix, np.array([X, Y, Z]))
-        return tuple(world_coords)
-    return point
-
-def transform_world_to_camera(world_coords, depth_data):
-    """Convert world coordinates (X, Y, Z) to camera coordinates, undoing tilt correction."""
-    Xw, Yw, Zw = world_coords
-
-    closest_point = depth_data.get(world_coords, None)
-
-    if closest_point != None:
-        closest_point_depth = closest_point['depth']
-
-        # Re-calculate the tilt angle based on the depth value
-        theta = math.degrees(math.acos(parameters.CAMERA_HEIGHT / closest_point_depth))
-        theta_rad = math.radians(theta)
-
-        # Rotation matrix for undoing the tilt correction around X-axis
-        rotation_matrix_inv = np.array([
-            [1, 0, 0],
-            [0, np.cos(-theta_rad), -np.sin(-theta_rad)],
-            [0, np.sin(-theta_rad), np.cos(-theta_rad)]
-        ])
-
-        # Apply the inverse rotation matrix
-        camera_coords = np.dot(rotation_matrix_inv, np.array([Xw, Yw, Zw]))
-        return tuple(camera_coords)
-    
-    return world_coords
-
-def world_to_pixel(X, Y, Z, depth_frame, intrinsics):
-    """Convert real-world (X, Y, Z) in meters to depth pixel (u, v) using RealSense function."""
-    # Project the 3D point to 2D pixel coordinates (u, v)
-    point_3d = np.array([X, Y, Z])  # World coordinates (X, Y, Z)
-
-    # Use the RealSense function to project the 3D world point to pixel coordinates
-    pixel_coords = rs.rs2_project_point_to_pixel(intrinsics, point_3d)
-    
-    # Ensure the returned coordinates are valid and within the image bounds
-    u, v = map(int, pixel_coords)
-
-    return u, v
-
-def check_line_straight(pipeline, align):
+def detect_stretched(pipeline, align):
     global is_straight  # Ensure the function modifies the global variable
 
     MIN_CONTOUR_AREA = 5000  # Minimum contour area threshold

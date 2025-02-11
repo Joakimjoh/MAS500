@@ -116,7 +116,3 @@ def check_line_straight(pipeline, left_point = (200, 200), right_point = (100, 2
 
             if is_straight:
                 return True
-
-test = check_line_straight(pipeline)
-
-print(test)

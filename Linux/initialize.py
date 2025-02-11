@@ -1,34 +1,32 @@
-import time
+from dual_arm_xs import InterbotixManipulatorXS
+from data import get_squares_depth_data
 import pyrealsense2 as rs
-# from interbotix_xs_modules.xs_robot.arm import InterbotixManipulatorXS
+import parameters
+import rclpy
+import json
+import os
 
-# def initialize_robots():
-#     """
-#     Initializes two Interbotix VX250 6-DOF robotic arms and keeps trying until both are ready.
+def initialize_robots():
+    # Initialize Ros Node once for shared use
+    rclpy.init()
 
-#     Returns:
-#         tuple: A tuple containing two initialized robot objects (robot1, robot2).
-#     """
-#     while True:
-#         try:
-#             # Initialize the first robot
-#             robot1 = InterbotixManipulatorXS(
-#                 robot_model="wx250s",
-#                 robot_name="wx250s_robot1",
-#                 use_gripper=True
-#             )
-#             print("Robot 1 initialized successfully.")
+    # Create the Interbotix manipulators for the two robots
+    bot1 = InterbotixManipulatorXS(
+        robot_model='wx250s',
+        group_name='arm',
+        robot_name='arm1',
+        gripper_name='gripper',
+        node_name='node1'
+    )
+    bot2 = InterbotixManipulatorXS(
+        robot_model='wx250s',
+        group_name='arm',
+        robot_name='arm2',
+        gripper_name='gripper',
+        node_name='node2'
+    )
 
-
-#             if robot1:
-#                 print("Both robots are ready for commands!")
-#                 return robot1
-
-#         except Exception as e:
-#             print(f"An error occurred while initializing robots: {e}")
-
-#         print("Retrying initialization in 5 seconds...")
-#         time.sleep(5)  # Wait for 5 seconds before retrying
+    return bot1, bot2
 
 def initialize_camera():
     # Initialize RealSense pipeline
@@ -48,11 +46,22 @@ def initialize_camera():
     rgb_sensor.set_option(rs.option.sharpness, 100)  # Set sharpness to 100
     # Set depth sensor options
     depth_sensor.set_option(rs.option.visual_preset, 5)
+    
     align = rs.align(rs.stream.color)
 
-    depth_stream = profile.get_stream(rs.stream.depth).as_video_stream_profile()
+    return pipeline, align, profile
 
-    # Get intrinsics
-    intrinsics_depth = depth_stream.get_intrinsics()
+def initialize_depth_data(pipeline, align):
+    # Check if chessboard depth data file exists
+    if os.path.exists(parameters.DEPTH_DATA_FILE):
+        print("Depth data file found, loading...")
+        with open(parameters.DEPTH_DATA_FILE, "r") as f:
+            depth_data = json.load(f)
+    else:
+        print("No depth data file found, capturing...")
+        depth_data = get_squares_depth_data(pipeline, align)
 
-    return pipeline, align, intrinsics_depth
+    # Convert depth data to a dictionary for fast lookup
+    depth_data_dict = {(point['x'], point['y']): point for point in depth_data}
+
+    return depth_data_dict

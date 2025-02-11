@@ -5,27 +5,21 @@ from rclpy.node import Node
 from std_msgs.msg import String
 from rclpy.executors import MultiThreadedExecutor
 from threading import Lock, Thread
-import threading
 import sys
 import time
 import rclpy
 from typing import Any, List, Tuple, Union
 import interbotix_common_modules.angle_manipulation as ang
-from rclpy.duration import Duration
-from rclpy.logging import LoggingSeverity, set_logger_level
+from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from interbotix_xs_modules.xs_robot import mr_descriptions as mrd
 from sensor_msgs.msg import JointState
-from asyncio import Future
-import copy
 import math
 import sys
 from threading import Lock
-from typing import Dict, List
+from typing import List
 import modern_robotics as mr
 import numpy as np
-from camera_detection import check_line_straight
 
 from interbotix_xs_msgs.msg import (
     JointGroupCommand,
@@ -743,62 +737,3 @@ class InterbotixManipulatorXS:
                 gripper_pressure_lower_limit=gripper_pressure_lower_limit,
                 gripper_pressure_upper_limit=gripper_pressure_upper_limit,
             )
-
-def move_arm_to_home_pose(bot, barrier, x, y, z):
-
-    bot.gripper.release()
-
-    bot.arm.set_ee_pose_components(x, y, z + 0.05, pitch=1)
-
-
-    #bot.arm.set_single_joint_position('wrist_rotate', 1.5)
-    barrier.wait()
-    
-    bot.gripper.grasp(0.1)
-
-    bot.arm.set_ee_pose_components(x, y, z, pitch=1)
-
-    barrier.wait()
-
-    time.sleep(1)
-
-    is_straight = False
-    if y > 0:
-        bot.arm.set_ee_pose_components(x, 0.2, z + 0.2, pitch=1)
-        while not is_straight:
-            x -= 0.01
-            bot.arm.set_ee_pose_components(x, 0.2, z + 0.2, pitch=1)
-            is_straight = check_line_straight()
-
-
-    else:
-        bot.arm.set_ee_pose_components(x, -0.2, z + 0.2, pitch=1)
-        while not is_straight:
-            x -= 0.01
-            bot.arm.set_ee_pose_components(x, -0.2, z + 0.2, pitch=1)
-            is_straight = check_line_straight()
-
-    barrier.wait()
-
-    bot.arm.go_to_sleep_pose()
-
-    bot.gripper.release()
-
-def start_arm(left_point, right_point):
-    rclpy.init()
-
-    # Create the Interbotix manipulators for the two robots
-    bot1 = InterbotixManipulatorXS(
-        robot_model='wx250s',
-        group_name='arm',
-        robot_name='arm1',
-        gripper_name='gripper',
-        node_name='node1'
-    )
-    bot2 = InterbotixManipulatorXS(
-        robot_model='wx250s',
-        group_name='arm',
-        robot_name='arm2',
-        gripper_name='gripper',
-        node_name='node2'
-    )
