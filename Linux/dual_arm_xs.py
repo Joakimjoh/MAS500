@@ -703,6 +703,7 @@ class InterbotixManipulatorXS:
         group_name: str = 'arm',
         gripper_name: str = 'gripper',
         robot_name: str = None,
+        tag: tuple = None,
         moving_time: float = 2.0,
         accel_time: float = 0.3,
         gripper_pressure: float = 0.5,
@@ -714,6 +715,13 @@ class InterbotixManipulatorXS:
         start_on_init: bool = True,
         args=None,
     ) -> None:
+        
+        # Placeholder for orientation and translation
+        if tag is not None:
+            self.rotation_vector, self.translation_vector = tag
+        else:
+            self.rotation_vector, self.translation_vector = None, None  # Prevents errors
+            
         # Initialize core robot interface
         self.core = InterbotixRobotXSCore(
             robot_model=robot_model,
