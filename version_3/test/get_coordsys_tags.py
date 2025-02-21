@@ -24,24 +24,27 @@ detector = apriltag.Detector(options)
 
 # Define the 3D points of the cube in the AprilTag's coordinate system
 tag_size = 0.022  # 5cm AprilTag
+cube_size = 0.022  # 5cm Cube height
 
 # Define 3D points for cube base (on tag) and top (elevated)
 cube_points_3D = np.array([
     [0, 0, 0],  # Bottom-left corner of tag
     [tag_size, 0, 0],  # Bottom-right corner of tag
     [tag_size, tag_size, 0],  # Top-right corner of tag
-    [0, tag_size, 0]  # Top-left corner of tag
+    [0, tag_size, 0],  # Top-left corner of tag
+    [0, 0, -cube_size],  # Elevated corners (top face)
+    [tag_size, 0, -cube_size],
+    [tag_size, tag_size, -cube_size],
+    [0, tag_size, -cube_size]
 ], dtype=np.float32)
 
 # Define 3D coordinate axes at the **top of the cube**
 axes_3D = np.float32([
-    [tag_size / 2, tag_size / 2, -tag_size],  # Origin at cube top center
-    [tag_size / 2 + 0.03, tag_size / 2, -tag_size],  # X-axis (red)
-    [tag_size / 2, tag_size / 2 + 0.03, -tag_size],  # Y-axis (green)
-    [tag_size / 2, tag_size / 2, -tag_size - 0.03]   # Z-axis (blue)
+    [tag_size / 2, tag_size / 2, -cube_size],  # Origin at cube top center
+    [tag_size / 2 + 0.03, tag_size / 2, -cube_size],  # X-axis (red)
+    [tag_size / 2, tag_size / 2 + 0.03, -cube_size],  # Y-axis (green)
+    [tag_size / 2, tag_size / 2, -cube_size - 0.03]   # Z-axis (blue)
 ])
-
-tag_poses = {}
 
 while True:
     frames = pipeline.wait_for_frames()
@@ -89,24 +92,19 @@ while True:
             # Blue (Z-axis): Bottom-left to top-center (backward direction)
             cv2.line(color_image, tuple(imgpts[0]), tuple(imgpts[4]), (255, 0, 0), 3)  # Z-axis (blue)
 
-            # Store the pose of each detected tag
-            tag_poses[detection.tag_id] = (rvec, tvec)
+            # Convert rotation vector to rotation matrix
+            rotation_matrix, _ = cv2.Rodrigues(rvec)
 
-            # If Tag 1 and Tag 2 both detected, compute relative position of Tag 2 in Tag 1's coordinate system
-            if 1 in tag_poses and 2 in tag_poses:
-                rvec1, tvec1 = tag_poses[1]  # Pose of Tag 1
-                rvec2, tvec2 = tag_poses[2]  # Pose of Tag 2
+            # Compute Euler angles
+            pitch = np.arctan2(rotation_matrix[2, 1], rotation_matrix[2, 2])
+            yaw = np.arctan2(-rotation_matrix[2, 0], np.sqrt(rotation_matrix[2, 1]**2 + rotation_matrix[2, 2]**2))
+            roll = np.arctan2(rotation_matrix[1, 0], rotation_matrix[0, 0])
 
-                # Convert rotation vectors to rotation matrices
-                rotation_matrix1, _ = cv2.Rodrigues(rvec1)
-                rotation_matrix2, _ = cv2.Rodrigues(rvec2)
-
-                # Compute the relative transformation (Tag 2 in Tag 1's coordinate system)
-                relative_rotation_matrix = np.dot(rotation_matrix1.T, rotation_matrix2)  # Inverse of Tag 1's rotation matrix
-                relative_translation = np.dot(rotation_matrix1.T, (tvec2 - tvec1))  # Translate Tag 2 by the relative rotation
-
-                print(f"\n📌 Tag 2 in Tag 1's Coordinate System:")
-                print(f"Position (meters): X={relative_translation[0][0]:.3f}, Y={relative_translation[1][0]:.3f}, Z={relative_translation[2][0]:.3f}")
+            # Print Tag details
+            print("\n📌 Tag ID:", detection.tag_id)
+            print("Position (meters): X={:.3f}, Y={:.3f}, Z={:.3f}".format(tvec[0][0], tvec[1][0], tvec[2][0])) #Change so it uses depth value
+            print("Rotation (degrees): Pitch={:.2f}, Yaw={:.2f}, Roll={:.2f}".format(
+                np.degrees(pitch), np.degrees(yaw), np.degrees(roll)))
 
             # Put the tag ID text
             cv2.putText(color_image, f"ID: {detection.tag_id}", tuple(corners[0].astype(int)),

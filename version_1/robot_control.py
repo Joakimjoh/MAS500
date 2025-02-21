@@ -1,4 +1,4 @@
-import MAS500.parameters as parameters
+import parameters as parameters
 from interbotix_xs_modules.arm import InterbotixArm
 
 def robot_pathing(positions):
