@@ -11,11 +11,9 @@ class Process():
         bot_left: InterbotixManipulatorXS = None,
         bot_right: InterbotixManipulatorXS = None,
     ) -> None:
-        self.pick_up_event = threading.Event()
+        self.pick_up_event = threading.Event()  
 
         self.pixel_points = {}
-
-        self.pick_up_height = 0.25
 
         if camera is not None:
             self.camera = camera
@@ -24,24 +22,23 @@ class Process():
             self.bot_left, self.bot_right = bot_left, bot_right
 
     def unfold(self):
-        pixel_point_left, pixel_point_right = self.get_left_right_point()
+        self.pixel_points = self.get_left_right_point()
 
-        if pixel_point_left is not None and pixel_point_right is not None:
-            point_left = self.camera.pixel_to_coordsystem(self.bot_left.tag.orientation, pixel_point_left)
-            point_right = self.camera.pixel_to_coordsystem(self.bot_right.tag.orientation, pixel_point_right)
+        if self.pixel_points is not None:
+            threads = []
 
-            thread_stretch_left = threading.Thread(target=self.stretch, args=(self.bot_left, point_left))
-            thread_stretch_right = threading.Thread(target=self.stretch, args=(self.bot_right, point_right))
-            thread_stretch_left.start()
-            thread_stretch_right.start()
-            thread_stretch_left.join()
-            thread_stretch_right.join()
+            for id, bot in enumerate([self.bot_left, self.bot_right]):
+                thread = threading.Thread(target=self.test, args=(bot, id))
+                thread.start()
+                threads.append(thread)
 
             self.pick_up_event.wait()
-            thread_detect_stretched = threading.Thread(target=self.detect_stretched)
-            thread_detect_stretched.start()
-            thread_detect_stretched.join()
-            self.pick_up_event.clear()
+
+            # thread_detect = threading.Thread(target=self.detect_stretched)
+            # thread_detect.start()
+
+            # for thread in threads:
+            #     thread.join()
 
     def get_largest_contour(self, contours, min_contour=5000):
         # Filter by size
@@ -164,10 +161,10 @@ class Process():
                         else:
                             self.camera.frame.text = "Line is Not Straight"
 
-    def stretch(self, bot, point, stretch_rate=0.005):
-        x, y, z = point
-
+    def stretch(self, bot, id, barrier, x, y, z2, stretch_rate=0.005):
         barrier = threading.Barrier(2)
+
+        x, y, z = self.camera.pixel_to_coordsystem(bot.tag.orientation, self.points[id])
 
         self.pick_up_object(bot, barrier, x, y, z)
 
@@ -175,18 +172,14 @@ class Process():
 
         while not self.flag_straight:
             x += stretch_rate
-            bot.arm.set_ee_pose_components(x, y, self.pick_up_height, pitch=1)
+            bot.arm.set_ee_pose_components(x, y, z2, pitch=1)
             barrier.wait()
 
-            self.point = self.camera.coordsystem_to_pixel(bot.tag.orientation, (x, y, self.pick_up_height))
-        
-        barrier.wait()
+            self.point[id] = self.camera.coordsystem_to_pixel(bot.rotation_vector, bot.translation_vector, (x, y, z2))
+
         self.lay_flat_object(bot, x, y)
 
-    def pick_up_object(self, bot, barrier, point, pitch=1):
-        x, y, z = point
-        barrier.wait()
-
+    def pick_up_object(bot, barrier, x, y, z, pitch=1):
         bot.gripper.release()
 
         bot.arm.set_ee_pose_components(x, y, z + 0.1, pitch=pitch)
@@ -201,10 +194,7 @@ class Process():
 
         barrier.wait()
 
-        if bot.robot_name == "left_arm":
-            bot.arm.set_ee_pose_components(x, -0.25, self.pick_up_height, pitch=pitch)
-        elif bot.robot_name == "right_arm":
-            bot.arm.set_ee_pose_components(x, 0.25, self.pick_up_height, pitch=pitch)
+        bot.arm.set_ee_pose_components(x, 0.25, 0.25, pitch=pitch)
 
     def lay_flat_object(bot, x, y, pitch=1):
         bot.arm.set_ee_pose_components(x, 0, 0.1, pitch=pitch)

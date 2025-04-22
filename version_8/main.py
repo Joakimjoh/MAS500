@@ -24,7 +24,7 @@ bot_left = InterbotixManipulatorXS(
     robot_name='left_arm',
     gripper_name='gripper',
     node_name='node1',
-    tag=Tag(camera, "left") # Define left tag
+    tag=Tag(camera, "left") # Define family for left tag
 )
 bot_right = InterbotixManipulatorXS(
     robot_model='wx250s',
@@ -32,11 +32,11 @@ bot_right = InterbotixManipulatorXS(
     robot_name='right_arm',
     gripper_name='gripper',
     node_name='node2',
-    tag= Tag(camera, "right") # Define right tag
+    tag= Tag(camera, "right") # Define family for right tag
 )
 
 print("Press Enter to start")
 process = Process(camera, bot_left, bot_right)
 while True:
     if cv2.waitKey(1) & 0xFF == 13:  # 13 is the Enter key
-        process.unfold()
+        process.start()
