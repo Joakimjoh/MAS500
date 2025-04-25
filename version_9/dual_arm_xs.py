@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-sys.path.append('/home/student/interbotix_ws')
-
 import rclpy
 from tag import Tag
 from rclpy.node import Node
@@ -36,6 +34,8 @@ from interbotix_xs_msgs.srv import (
     RobotInfo,
     TorqueEnable,
 )
+
+sys.path.append('/home/student/interbotix_ws')
 
 REV: float = 2 * np.pi
 

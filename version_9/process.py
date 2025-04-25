@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import threading
 import math
+import time
 from enum import Enum
 
 # Define the UnfoldState enum class
@@ -26,8 +27,8 @@ class Process():
         self.state = UnfoldState.GET_POINTS
         self.previous_state = None
         self.flag_straight = False
-        self.pixel_points = {}
-        self.tag_points = {}
+        self.pixel_points = [[None, None], [None, None]]
+        self.tag_points = [[None, None, None], [None, None, None]]
 
         self.barrier = threading.Barrier(2)
         self.pick_up_height = 0.25
@@ -38,21 +39,38 @@ class Process():
         if bot_left is not None and bot_right is not None:
             self.bot_left, self.bot_right = bot_left, bot_right
 
+        thread = threading.Thread(target=self.update_points, daemon=True)
+        thread.start()
+
+        thread.join(timeout=2)
+
+    def update_points(self):
+        while True:
+            self.camera.frame.tag_points = self.tag_points
+            time.sleep(0.1)
+
     def unfold(self):
         while self.state != UnfoldState.DONE:
             self.previous_state = self.state
 
             if self.state == UnfoldState.GET_POINTS:
                 self.pixel_points = self.camera.frame.get_left_right_point()
+
+                for id, bot in enumerate([self.bot_left, self.bot_right]):
+                    point = self.camera.pixel_to_coordsystem(
+                        bot.tag.orientation, self.pixel_points[id]
+                    )
+                    self.tag_points[id] = bot.tag.adjust_error(point)
                 if self.pixel_points is not None:
                     self.state = UnfoldState.PICK_UP
 
             elif self.state == UnfoldState.PICK_UP:
                 threads = []
                 for id, bot in enumerate([self.bot_left, self.bot_right]):
-                    self.tag_points[id] = self.camera.pixel_to_coordsystem(
+                    point = self.camera.pixel_to_coordsystem(
                         bot.tag.orientation, self.pixel_points[id]
                     )
+                    self.tag_points[id] = bot.tag.adjust_error(point)
                     thread = threading.Thread(target=self.pick_up_object, args=(bot, id))
                     thread.start()
                     threads.append(thread)
@@ -93,6 +111,12 @@ class Process():
 
             elif self.state == UnfoldState.GET_POINTS_UPPER:
                 self.pixel_points = self.camera.frame.get_left_right_point(20)
+
+                for id, bot in enumerate([self.bot_left, self.bot_right]):
+                    point = self.camera.pixel_to_coordsystem(
+                        bot.tag.orientation, self.pixel_points[id]
+                    )
+                    self.tag_points[id] = bot.tag.adjust_error(point)
                 if self.pixel_points is not None:
                     self.state = UnfoldState.PICK_UP
 
@@ -117,10 +141,14 @@ class Process():
                 print("[Manual] Manual pixel input mode.")
                 # Trigger the click function from the Camera to get points manually
                 print("[Manual] Click point for left arm")
-                self.pixel_points[0] = self.camera.wait_for_click()  # Assuming wait_for_click waits for a click and returns the coordinates
-
+                left = self.camera.wait_for_click()  # Assuming wait_for_click waits for a click and returns the coordinates
+                self.camera.frame.points["Left Point"] = (left[0], left[1], "red")
+    
                 print("[Manual] Click point for right arm")
-                self.pixel_points[1] = self.camera.wait_for_click()  # Get second point from user
+                right = self.camera.wait_for_click()  # Get second point from user
+                self.camera.frame.points["Right Point"] = (right[0], right[1], "blue")
+
+                self.pixel_points = [left, right]
                 print("[Manual] Custom pixel points set, returning to PICK_UP.")
                 return UnfoldState.PICK_UP
 
@@ -191,13 +219,15 @@ class Process():
 
     def stretch(self, bot, id, stretch_rate=0.005):
         x, _, _ = self.tag_points[id]
+        x = float(x)
+        
         if id == 0:
             y = -self.pick_up_height
         elif id == 1:
             y = self.pick_up_height
 
         while not self.flag_straight:
-            x += stretch_rate
+            x -= stretch_rate
             bot.arm.set_ee_pose_components(x, y, self.pick_up_height, pitch=1)
             self.barrier.wait()
 
@@ -208,8 +238,12 @@ class Process():
         self.lay_flat_object(bot, x)
 
     def pick_up_object(self, bot, id, pitch=1):
-        x, y, z = self.pixel_points[id]
+        x, y, z = self.tag_points[id]
 
+        x = float(x)
+        y = float(y)
+        z = float(z)
+        
         bot.gripper.release()
 
         bot.arm.set_ee_pose_components(x, y, z + 0.1, pitch=pitch)

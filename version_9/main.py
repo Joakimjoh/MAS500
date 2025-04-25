@@ -38,5 +38,5 @@ bot_right = InterbotixManipulatorXS(
 print("Press Enter to start")
 process = Process(camera, bot_left, bot_right)
 while True:
-    if cv2.waitKey(1) & 0xFF == 13:  # 13 is the Enter key
+    if camera.key == 13:  # 13 is the Enter key
         process.unfold()
