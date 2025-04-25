@@ -14,9 +14,9 @@ def start(left_bot, right_bot):
 
     if pixel_points is not None:
         threads = []
-
+        barrier = threading.Barrier(2)
         for i, bot in enumerate([left_bot, right_bot]):
-            thread = threading.Thread(target=test, args=(bot, pixel_points[i]))
+            thread = threading.Thread(target=stretch, args=(bot, pixel_points[i], barrier))
             thread.start()
             threads.append(thread)
 
@@ -157,9 +157,7 @@ def test(bot, point):
 
     print(x, y, z)
 
-def stretch(bot, point, barrier, x, y, z, stretch_rate=0.005):
-    barrier = threading.Barrier(2)
-
+def stretch(bot, point, barrier, stretch_rate=0.005):
     x, y, z = point
 
     pick_up_object(bot, barrier, point)

@@ -2,8 +2,19 @@ from camera import Camera
 from dual_arm_xs import InterbotixManipulatorXS
 import cv2
 import numpy as np
-import math
 import threading
+import math
+from enum import Enum
+
+# Define the UnfoldState enum class
+class UnfoldState(Enum):
+    GET_POINTS = 1
+    PICK_UP = 2
+    STRETCH = 3
+    LAY_FLAT = 4
+    DETECT = 5
+    GET_POINTS_UPPER = 6
+    DONE = 7
 
 class Process():
     def __init__(self, 
@@ -11,10 +22,14 @@ class Process():
         bot_left: InterbotixManipulatorXS = None,
         bot_right: InterbotixManipulatorXS = None,
     ) -> None:
-        self.pick_up_event = threading.Event()
 
+        self.state = UnfoldState.GET_POINTS
+        self.previous_state = None
+        self.flag_straight = False
         self.pixel_points = {}
+        self.tag_points = {}
 
+        self.barrier = threading.Barrier(2)
         self.pick_up_height = 0.25
 
         if camera is not None:
@@ -24,95 +39,105 @@ class Process():
             self.bot_left, self.bot_right = bot_left, bot_right
 
     def unfold(self):
-        pixel_point_left, pixel_point_right = self.get_left_right_point()
+        while self.state != UnfoldState.DONE:
+            self.previous_state = self.state
 
-        if pixel_point_left is not None and pixel_point_right is not None:
-            point_left = self.camera.pixel_to_coordsystem(self.bot_left.tag.orientation, pixel_point_left)
-            point_right = self.camera.pixel_to_coordsystem(self.bot_right.tag.orientation, pixel_point_right)
+            if self.state == UnfoldState.GET_POINTS:
+                self.pixel_points = self.camera.frame.get_left_right_point()
+                if self.pixel_points is not None:
+                    self.state = UnfoldState.PICK_UP
 
-            thread_stretch_left = threading.Thread(target=self.stretch, args=(self.bot_left, point_left))
-            thread_stretch_right = threading.Thread(target=self.stretch, args=(self.bot_right, point_right))
-            thread_stretch_left.start()
-            thread_stretch_right.start()
-            thread_stretch_left.join()
-            thread_stretch_right.join()
+            elif self.state == UnfoldState.PICK_UP:
+                threads = []
+                for id, bot in enumerate([self.bot_left, self.bot_right]):
+                    self.tag_points[id] = self.camera.pixel_to_coordsystem(
+                        bot.tag.orientation, self.pixel_points[id]
+                    )
+                    thread = threading.Thread(target=self.pick_up_object, args=(bot, id))
+                    thread.start()
+                    threads.append(thread)
 
-            self.pick_up_event.wait()
-            thread_detect_stretched = threading.Thread(target=self.detect_stretched)
-            thread_detect_stretched.start()
-            thread_detect_stretched.join()
-            self.pick_up_event.clear()
+                for t in threads:
+                    t.join()
+                self.state = UnfoldState.STRETCH
 
-    def get_largest_contour(self, contours, min_contour=5000):
-        # Filter by size
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)
-        contours = [c for c in contours if cv2.contourArea(c) > min_contour]
-
-        if contours:
-            # Get the largest contour by area
-            largest_contour = max(contours, key=cv2.contourArea)
-
-            # Approximate the contour to reduce noise
-            epsilon = 0.01 * cv2.arcLength(largest_contour, True)
-            largest_contour = cv2.approxPolyDP(largest_contour, epsilon, True)    
-
-            return largest_contour
-        
-        return None
-
-    def get_left_right_point(self):
-        contours = self.camera.frame.detect_red_objects()
-
-        if not contours:
-            return None, None
-        
-        largest_contour = self.get_largest_contour(contours)
-
-        if largest_contour is None:
-            return None, None
-        
-        # Add contour to frame
-        self.camera.frame.objects["Object1"] = (largest_contour, "blue")
-
-        # Compute centroid of the contour
-        M = cv2.moments(largest_contour)
-        centroid_x = int(M["m10"] / M["m00"])
-        centroid_y = int(M["m01"] / M["m00"])
-
-        # Find extreme left and right points
-        left_point = tuple(largest_contour[largest_contour[:, :, 0].argmin()][0])
-        right_point = tuple(largest_contour[largest_contour[:, :, 0].argmax()][0])
-
-        # Calculate the vector from the points to the centroid
-        delta_left = (centroid_x - left_point[0], centroid_y - left_point[1])
-        delta_right = (centroid_x - right_point[0], centroid_y - right_point[1])
-
-        # Move the points 10% towards the centroid
-        left_point_inside = (int(left_point[0] + 0.1 * delta_left[0]), int(left_point[1] + 0.1 * delta_left[1]))
-        right_point_inside = (int(right_point[0] + 0.1 * delta_right[0]), int(right_point[1] + 0.1 * delta_right[1]))
+            elif self.state == UnfoldState.STRETCH:
+                threads = []
+                for id, bot in enumerate([self.bot_left, self.bot_right]):
+                    thread = threading.Thread(target=self.stretch, args=(bot, id))
+                    thread.start()
+                    threads.append(thread)
                 
-        # Add points to frame
-        self.camera.frame.points["Point1"] = (left_point_inside[0], left_point_inside[1], "green")
-        self.camera.frame.points["Point2"] = (right_point_inside[0], right_point_inside[1], "red")
+                self.detect_stretched()
 
-        return left_point_inside, right_point_inside
+                for t in threads:
+                    t.join()
+                self.state = UnfoldState.LAY_FLAT
+
+            elif self.state == UnfoldState.LAY_FLAT:
+                threads = []
+                for id, bot in enumerate([self.bot_left, self.bot_right]):
+                    thread = threading.Thread(target=self.lay_flat_object, args=(bot, id))
+                    thread.start()
+                    threads.append(thread)
+
+                for t in threads:
+                    t.join()
+                self.state = UnfoldState.DETECT
+
+            elif self.state == UnfoldState.DETECT:
+                # Run AI model to detect if the object is flat
+                # If flat, unfoldstate.DONE
+                # If not flat, unfoldstate.GET_POINTS_UPPER
+                self.state = UnfoldState.GET_POINTS_UPPER
+
+            elif self.state == UnfoldState.GET_POINTS_UPPER:
+                self.pixel_points = self.camera.frame.get_left_right_point(20)
+                if self.pixel_points is not None:
+                    self.state = UnfoldState.PICK_UP
+
+            # If manual mode is on, wait for input after each step
+            if self.camera.manual_mode:
+                self.state = self.await_manual_control()
+
+    def await_manual_control(self):
+        print("[Manual] Waiting for input (q = back, w = next, e = manual pixel input then pick up)...")
+        while True:
+            key = self.camera.key  # Assuming you are updating key somewhere else
+
+            if key == ord('q'):
+                print("[Manual] Going back to previous state.")
+                return self.previous_state
+
+            elif key == ord('w'):
+                print("[Manual] Continuing to next state.")
+                return self.state
+
+            elif key == ord('e'):
+                print("[Manual] Manual pixel input mode.")
+                # Trigger the click function from the Camera to get points manually
+                print("[Manual] Click point for left arm")
+                self.pixel_points[0] = self.camera.wait_for_click()  # Assuming wait_for_click waits for a click and returns the coordinates
+
+                print("[Manual] Click point for right arm")
+                self.pixel_points[1] = self.camera.wait_for_click()  # Get second point from user
+                print("[Manual] Custom pixel points set, returning to PICK_UP.")
+                return UnfoldState.PICK_UP
 
     def detect_stretched(self):
         while True:
             contours = self.camera.frame.detect_red_objects()
 
             if contours:
-                largest_contour = self.get_largest_contour(contours)
+                largest_contour = self.camera.frame.get_largest_contour(contours)
                 
                 if largest_contour is not None:
-                    self.camera.frame.objects["Object1"] = (largest_contour, "blue")
-
                     # Find the nearest points on the contour to self.point_left and self.point_right
                     left_index = np.argmin(
-                        [np.linalg.norm(np.array((pt[0][0], pt[0][1])) - np.array(self.point_left)) for pt in largest_contour]
+                        [np.linalg.norm(np.array((pt[0][0], pt[0][1])) - np.array(self.pixel_points[0])) for pt in largest_contour]
                     )
                     right_index = np.argmin(
-                        [np.linalg.norm(np.array((pt[0][0], pt[0][1])) - np.array(self.point_right)) for pt in largest_contour]
+                        [np.linalg.norm(np.array((pt[0][0], pt[0][1])) - np.array(self.pixel_points[1])) for pt in largest_contour]
                     )
 
                     # Ensure proper order (left -> right)
@@ -130,11 +155,11 @@ class Process():
                         chosen_segment = segment2
 
                     # Draw the chosen segment for visualization
-                    self.camera.frame.objects["Object2"] = (chosen_segment, "cyan")
+                    self.camera.frame.objects["Object"] = (chosen_segment, "cyan")
 
                     # Check if the segment is straight
-                    x1, y1 = self.point_left
-                    x2, y2 = self.point_right
+                    x1, y1 = self.pixel_points[0]
+                    x2, y2 = self.pixel_points[1]
 
                     # Calculate the line equation: y = mx + c
                     if x2 != x1:
@@ -164,34 +189,30 @@ class Process():
                         else:
                             self.camera.frame.text = "Line is Not Straight"
 
-    def stretch(self, bot, point, stretch_rate=0.005):
-        x, y, z = point
-
-        barrier = threading.Barrier(2)
-
-        self.pick_up_object(bot, barrier, x, y, z)
-
-        self.pick_up_event.set()
+    def stretch(self, bot, id, stretch_rate=0.005):
+        x, _, _ = self.tag_points[id]
+        if id == 0:
+            y = -self.pick_up_height
+        elif id == 1:
+            y = self.pick_up_height
 
         while not self.flag_straight:
             x += stretch_rate
             bot.arm.set_ee_pose_components(x, y, self.pick_up_height, pitch=1)
-            barrier.wait()
+            self.barrier.wait()
 
-            self.point = self.camera.coordsystem_to_pixel(bot.tag.orientation, (x, y, self.pick_up_height))
-        
-        barrier.wait()
-        self.lay_flat_object(bot, x, y)
+            self.pixel_points[id] = self.camera.coordsystem_to_pixel(bot.tag.orientation, (x, y, self.pick_up_height))
 
-    def pick_up_object(self, bot, barrier, point, pitch=1):
-        x, y, z = point
-        barrier.wait()
+        self.tag_points[id] = (x, y, self.pick_up_height)
+        self.barrier.wait()
+        self.lay_flat_object(bot, x)
+
+    def pick_up_object(self, bot, id, pitch=1):
+        x, y, z = self.pixel_points[id]
 
         bot.gripper.release()
 
         bot.arm.set_ee_pose_components(x, y, z + 0.1, pitch=pitch)
-
-        barrier.wait()
 
         bot.arm.set_ee_pose_components(x, y, z + 0.05, pitch=pitch)
 
@@ -199,20 +220,29 @@ class Process():
 
         bot.arm.set_ee_pose_components(x, y, z, pitch=pitch)
 
-        barrier.wait()
+        self.barrier.wait()
 
-        if bot.robot_name == "left_arm":
-            bot.arm.set_ee_pose_components(x, -0.25, self.pick_up_height, pitch=pitch)
-        elif bot.robot_name == "right_arm":
-            bot.arm.set_ee_pose_components(x, 0.25, self.pick_up_height, pitch=pitch)
+        if id == 0:
+            y = -self.pick_up_height
+        elif id == 1:
+            y = self.pick_up_height
 
-    def lay_flat_object(bot, x, y, pitch=1):
+        bot.arm.set_ee_pose_components(x, y, self.pick_up_height, pitch=pitch)
+
+        self.barrier.wait()
+
+        self.tag_points[id] = (x, y, self.pick_up_height)
+
+    def lay_flat_object(self, bot, id, pitch=1):
+        x, _, _ = self.tag_points[id]
+        self.barrier.wait()
         bot.arm.set_ee_pose_components(x, 0, 0.1, pitch=pitch)
+        self.barrier.wait()
 
-        if y > 0:
-            bot.arm.set_ee_pose_components(x, 0.25, 0.1, pitch=pitch)
-        else:
-            bot.arm.set_ee_pose_components(x, -0.25, 0.1, pitch=pitch)
-
+        if id == 0:
+            bot.arm.set_ee_pose_components(x, -self.pick_up_height, 0.1, pitch=pitch)
+        elif id == 1:
+            bot.arm.set_ee_pose_components(x, self.pick_up_height, 0.1, pitch=pitch)
+        
         bot.gripper.release()
         bot.arm.go_to_sleep_pose()

@@ -63,7 +63,7 @@ class Camera:
         self.depth_sensor.set_option(rs.option.visual_preset, 5)
 
         self.manual_mode = False
-
+        self.key = None
         self.frame = Frame()  # Initialize a frame object
 
         # Start the frame-fetching thread
@@ -104,12 +104,14 @@ class Camera:
             # Display frame
             self.frame.display()
 
+            self.key = cv2.waitKey(1) & 0xFF
+
             # Change operating mode
-            if cv2.waitKey(1) & 0xFF == ord('r'):
+            if self.key == ord('r'):
                 self.manual_mode = not self.manual_mode
 
             # Close streaming frames
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            if self.key == 27:  # ESC key
                 self.stop()
                 break
 
@@ -118,6 +120,17 @@ class Camera:
         self.running = False
         self.frame.close()
         self.pipeline.stop()
+
+    def mouse_callback(self, event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            self.clicked_point = (x, y)
+
+    def wait_for_click(self):
+        """Wait for a mouse click on the existing frame."""
+        self.clicked_point = None
+        cv2.setMouseCallback("Select Point", self.mouse_callback)
+        
+        return self.clicked_point
 
     def get_depth(self, point):
         """Get depth at pixel coordiante with a filter for more stable depth reading"""

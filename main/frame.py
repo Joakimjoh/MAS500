@@ -5,7 +5,7 @@ class Frame:
     """Represents a frame with multiple outlines, points, title, and text."""
     def __init__(self):
         self.title = "RealSense Camera"  # Default window title
-        self.texts = []  # List of text to display in the top-left corner
+        self.text = ""  # List of text to display in the top-left corner
         self.objects = {}  # Dictionary {label: (outline, color)}
         self.points = {}  # Dictionary {label: (x, y, color)}
         self.axes = {} # Dictionary {label: (x, y)}
@@ -54,7 +54,7 @@ class Frame:
                 cv2.putText(self.color, label, (x + 5, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 
                             0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
-        # Draw all axes 
+        # Draw all axes
         if self.axes:
             for label, points in self.axes.items():
                 # Red (X-axis): Bottom-front to bottom-right (front face)
@@ -65,10 +65,8 @@ class Frame:
                 cv2.line(self.color, tuple(points[0]), tuple(points[4]), (255, 0, 0), 3)  # Z-axis (blue)
 
         # Draw text in the top-left corner
-        if self.texts:
-            index = 30
-            for i, text in enumerate(self.texts):
-                cv2.putText(self.color, text, (10, index * i + 60), cv2.FONT_HERSHEY_SIMPLEX, 
+        if self.text:
+            cv2.putText(self.color, self.text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
                             0.7, (255, 255, 255), 2, cv2.LINE_AA)
 
     def get_color(self, color):
@@ -104,3 +102,62 @@ class Frame:
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         return contours
+    
+    def get_largest_contour(self, contours, min_contour=5000):
+        # Filter by size
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+        contours = [c for c in contours if cv2.contourArea(c) > min_contour]
+
+        if contours:
+            # Get the largest contour by area
+            largest_contour = max(contours, key=cv2.contourArea)
+
+            # Approximate the contour to reduce noise
+            epsilon = 0.01 * cv2.arcLength(largest_contour, True)
+            largest_contour = cv2.approxPolyDP(largest_contour, epsilon, True)    
+
+            return largest_contour
+        
+        return None
+
+    def get_left_right_point(self, percentage: int = 100):
+        contours = self.detect_red_objects()
+
+        if not contours:
+            return None, None
+        
+        largest_contour = self.get_largest_contour(contours)
+
+        if largest_contour is None:
+            return None, None
+
+        # Compute bounding box of the largest contour
+        x, y, w, h = cv2.boundingRect(largest_contour)
+
+        # Determine the height of the portion to check based on the percentage
+        height_to_check = int(h * (percentage / 100))
+        
+        # Crop the contour to the top portion based on the given percentage
+        cropped_contour = largest_contour[largest_contour[:, :, 1] <= (y + height_to_check)]
+
+        if cropped_contour.size == 0:
+            return None, None
+
+        # Find extreme left and right points of the cropped contour
+        left_point = tuple(cropped_contour[cropped_contour[:, :, 0].argmin()][0])
+        right_point = tuple(cropped_contour[cropped_contour[:, :, 0].argmax()][0])
+
+        # Compute centroid of the cropped contour
+        M = cv2.moments(cropped_contour)
+        centroid_x = int(M["m10"] / M["m00"])
+        centroid_y = int(M["m01"] / M["m00"])
+
+        # Calculate the vector from the points to the centroid
+        delta_left = (centroid_x - left_point[0], centroid_y - left_point[1])
+        delta_right = (centroid_x - right_point[0], centroid_y - right_point[1])
+
+        # Move the points towards the centroid (e.g., 10% towards the centroid)
+        left_point_inside = (int(left_point[0] + 0.1 * delta_left[0]), int(left_point[1] + 0.1 * delta_left[1]))
+        right_point_inside = (int(right_point[0] + 0.1 * delta_right[0]), int(right_point[1] + 0.1 * delta_right[1]))
+
+        return left_point_inside, right_point_inside
