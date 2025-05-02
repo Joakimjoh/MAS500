@@ -8,7 +8,7 @@ from process import Process
 from camera import Camera
 from tag import Tag
 
-# Initialize Ros Node once for shared use
+# Initialize Ros Node once for shared useg
 rclpy.init()
 
 # Allow streaming in thread
@@ -35,8 +35,8 @@ bot_right = InterbotixManipulatorXS(
     tag= Tag(camera, "right") # Define right tag
 )
 
-print("Press Enter to start")
 process = Process(camera, bot_left, bot_right)
+print("Press Enter to start")
 while True:
-    if cv2.waitKey(1) & 0xFF == 13:  # 13 is the Enter key
+    if camera.key == 13:  # 13 is the Enter key
         process.unfold()

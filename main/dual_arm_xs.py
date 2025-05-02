@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-sys.path.append('/home/student/interbotix_ws')
-
 import rclpy
 from tag import Tag
 from rclpy.node import Node
@@ -36,6 +34,8 @@ from interbotix_xs_msgs.srv import (
     RobotInfo,
     TorqueEnable,
 )
+
+sys.path.append('/home/student/interbotix_ws')
 
 REV: float = 2 * np.pi
 
@@ -664,7 +664,6 @@ class InterbotixGripperXSInterface:
         with self.core.js_mutex:
             gripper_pos = self.core.joint_states.position[self.left_finger_index]
         # check if the gripper is within its limits
-        print(gripper_pos)
         self.core.pub_single.publish(self.gripper_command)
         self.gripper_moving = True
         time.sleep(delay)

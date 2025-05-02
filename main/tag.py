@@ -48,7 +48,9 @@ class Tag:
     def adjust_error(self, point):
         error = self.get_linear_reg_error((point[0], point[1]))
         point[2] -= error
-
+        point[2] += 0.006
+        if point[2] < 0.006:
+            point[2] = 0.006
         return point
 
     # LINEAR REGRESSION FITTING
@@ -76,7 +78,7 @@ class Tag:
         # Process the pixels in the region
         for x, y, depth in region_data:
             if depth > 0:
-                point_tag = self.camera.pixel_to_coordsystem((x, y, depth))
+                point_tag = self.camera.pixel_to_coordsystem(self.orientation, (x, y, depth))
                 x_values.append(point_tag[0])
                 y_values.append(point_tag[1])
                 z_values.append(point_tag[2])

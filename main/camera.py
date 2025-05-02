@@ -37,12 +37,6 @@ class Camera:
                           [0, 0, 1]])
         self.dist_coeffs = np.array(self.color_intrinsics.coeffs)
 
-        # Compute extrinsics (depth-to-color)
-        self.depth_to_color_extrinsics = depth_stream.get_extrinsics_to(color_stream)
-        self.extrinsics_rotation = np.array(self.depth_to_color_extrinsics.rotation).reshape(3, 3)
-        self.extrinsics_translation = np.array(self.depth_to_color_extrinsics.translation).reshape(3, 1)
-        self.extrinsics_matrix = np.hstack((self.extrinsics_rotation, self.extrinsics_translation))
-
         self.depth_sensor = self.profile.get_device().first_depth_sensor()
         self.depth_scale = self.depth_sensor.get_depth_scale()
         # Get the device
@@ -75,7 +69,7 @@ class Camera:
 
     def update_frames(self):
         """Continuously fetch frames and display them with outlines and points."""
-        while self.running:
+        while True:
             frames = self.pipeline.wait_for_frames()
             aligned_frames = self.align.process(frames)
             self.frame.color = aligned_frames.get_color_frame()
@@ -92,10 +86,10 @@ class Camera:
                 self.frame.center_x, self.frame.center_y = width // 2, height // 2
 
             mode = "Manual" if self.manual_mode else "Auto"
-            text = f"{mode} Mode - Press 'r' to change mode"
+            text = f"{mode} - Press 'r' to change mode"
 
             cv2.putText(self.frame.color, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
-                        0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                        0.5, (255, 255, 255), 1, cv2.LINE_AA)
             
             # Add attributes to frame
             if self.manual_mode:
@@ -117,7 +111,6 @@ class Camera:
 
     def stop(self):
         """Stops the camera stream and thread."""
-        self.running = False
         self.frame.close()
         self.pipeline.stop()
 
@@ -128,7 +121,11 @@ class Camera:
     def wait_for_click(self):
         """Wait for a mouse click on the existing frame."""
         self.clicked_point = None
-        cv2.setMouseCallback("Select Point", self.mouse_callback)
+        cv2.setMouseCallback(self.frame.title, self.mouse_callback)
+        while self.clicked_point is None:
+            if self.key == 27:  # ESC for å avbryte
+                print("[INFO] Click cancelled by user")
+                break
         
         return self.clicked_point
 
@@ -145,16 +142,24 @@ class Camera:
 
     def pixel_to_coordsystem(self, orientation, point_pixel):
         """Convert pixel coordinates from the camera into the coordinate system of one of the robot arms."""
-        rvec, tvec = orientation
+        if point_pixel is None:
+            print("[Error] pixel_to_coordsystem: Received None as point_pixel")
+            return None
 
+        rvec, tvec = orientation
         rmat, _ = cv2.Rodrigues(rvec)
-        
+
         # Handle the case where point_pixel contains 2 or 3 values
         if len(point_pixel) == 2:  # Only x, y provided
+            x, y = point_pixel
             z = self.get_depth(point_pixel)
 
         elif len(point_pixel) == 3:  # x, y, z provided
             x, y, z = point_pixel
+
+        else:
+            print("[Error] pixel_to_coordsystem: Invalid point_pixel format:", point_pixel)
+            return None
 
         # Camera intrinsic parameters
         fx, fy = self.color_intrinsics.fx, self.color_intrinsics.fy
@@ -163,52 +168,55 @@ class Camera:
         # Convert pixel coordinates to camera coordinates
         X_camera = (x - cx) * z / fx
         Y_camera = (y - cy) * z / fy
-        Z_camera = z  # Already given or retrieved
+        Z_camera = z
 
         point_camera = np.array([[X_camera], [Y_camera], [Z_camera]])
 
         # Transform camera coordinates to AprilTag coordinates
-        point = np.dot(rmat.T, (point_camera - tvec))
-
+        point = np.dot(rmat.T, (point_camera - tvec)) 
         return point
 
     def coordsystem_to_pixel(self, orientation, point):
-        """Convert a point from the robot arm's coordinate system to pixel coordinates in the camera's image"""
+        """Convert a point from the robot arm's coordinate system to pixel coordinates in the camera's image."""
+        # Extract rotation (rvec) and translation (tvec) from orientation
         rvec, tvec = orientation
-        # Convert rotation vector to rotation matrix (robot to camera)
-        rotation_matrix, _ = cv2.Rodrigues(rvec)
-        
-        # Translate the point from robot to camera coordinates
-        point_in_camera = np.dot(rotation_matrix, point) + tvec
-        
-        # Convert from camera coordinates to pixel coordinates
-        X_camera, Y_camera, Z_camera = point_in_camera
-        
-        # Ensure that Z_camera is not zero to avoid division by zero
-        if Z_camera == 0:
-            raise ValueError("Z coordinate in camera system is zero, cannot project to 2D.")
 
-        # Intrinsic parameters
+        # Convert rotation vector to rotation matrix
+        rmat, _ = cv2.Rodrigues(rvec)
+
+        # Ensure point is a column vector
+        point = np.array(point).reshape(3, 1)
+
+        # Transform point from robot coordinates to camera coordinates
+        point_camera = np.dot(rmat, point) + tvec  # point_camera should be a 3D vector
+
+        point_camera = point_camera.flatten()
+
+        # Extract camera coordinates (X_camera, Y_camera, Z_camera)
+        X_camera, Y_camera, Z_camera = point_camera
+
+        # Camera intrinsic parameters
         fx, fy = self.color_intrinsics.fx, self.color_intrinsics.fy
         cx, cy = self.color_intrinsics.ppx, self.color_intrinsics.ppy
 
-        # Project the point from camera coordinates to pixel coordinates using the camera's intrinsic matrix
+        # Convert from camera coordinates to pixel coordinates using the camera intrinsic matrix
         pixel_x = (fx * X_camera / Z_camera) + cx
         pixel_y = (fy * Y_camera / Z_camera) + cy
-        
-        # Return the pixel coordinates
-        return int(pixel_x), int(pixel_y)
+        pixel_point = np.array([int(round(pixel_x)), int(round(-pixel_y))])
+
+        return pixel_point # [int(round(pixel_x)), int(round(pixel_y))]
+
     
     def get_orientation(self, side=None):
         """Get orientation and translation relative to camera"""
 
         # Define normalized 3D object points for the tag (including a fifth point for the Z-axis)
         object_points = np.array([
-            [-1, -1, 0],
-            [1, -1, 0],
-            [1, 1, 0],
             [-1, 1, 0],
-            [-1, -1, -1]
+            [1, 1, 0],
+            [1, -1, 0],
+            [-1, -1, 0],
+            [-1, -1, 1]
         ], dtype=np.float32)
 
         # Detect AprilTags
@@ -257,6 +265,9 @@ class Camera:
         # Compute scale factor based on depth
         scale_factor = Z_real_tag / tvec[2]
         tvec_real = tvec * scale_factor
+
+
+        tvec_real[1] -= 0.12
 
         # Visualize tag axes
         imgpts, _ = cv2.projectPoints(object_points, rvec, tvec, self.camera_matrix, self.dist_coeffs)

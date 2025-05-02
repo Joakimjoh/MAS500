@@ -313,7 +313,7 @@ if color_image_saved is not None and depth_frame_saved is not None:
     # Step 1: Find the largest red object and get its points list
     points_list, largest_red_mask = red_object(color_image_saved)
     contours_red_object, _ = cv2.findContours(largest_red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    #cv2.drawContours(color_image, contours_red_object, -1, (255, 0, 0), 2)
+    cv2.drawContours(color_image, contours_red_object, -1, (255, 0, 0), 2)
 
     cv2.imshow("Cam", color_image)
 
@@ -328,45 +328,38 @@ if color_image_saved is not None and depth_frame_saved is not None:
 
         contour_mask = np.zeros(color_image.shape[:2], dtype=np.uint8)
 
-        z_values = np.array([point[2] for point in depth_data])  # Convert to np.array right away
-        z_values = z_values[z_values > 0]  # Now you can filter correctly
-        mean_z = np.mean(z_values)
-        low_z = min(z_values)
-        high_z = max(z_values)
+        z_values = [point[2] for point in depth_data]
+        z_values = np.array(z_values)
 
-        # Find the 80th percentile z value
-        z_threshold = np.percentile(z_values, 100)
+        z_values = z_values[z_values > 0]
 
-        # Draw points with smooth color transition
+        # Remove the 10% lowest and 10% highest
+        lower_percentile = np.percentile(z_values, 10)
+        upper_percentile = np.percentile(z_values, 90)
+        filtered_z_values = z_values[(z_values >= lower_percentile) & (z_values <= upper_percentile)]
+
+        # Now calculate new low, mean, and high
+        low_z = np.min(filtered_z_values)
+        mean_z = np.mean(filtered_z_values)
+        high_z = np.max(filtered_z_values)
+
+        print(f"Low Z: {low_z}, Mean Z: {mean_z}, High Z: {high_z}")
+
         for x, y, z in depth_data:
-            #if z <= z_threshold:
-            z = min(max(z, 0), 1)  # Clamp values
-            high_z = min(max(high_z, 0), 1)  # Clamp values
-            low_z = min(max(low_z, 0), 1)  # Clamp values
-            ratio = (z - low_z) / (high_z - low_z) if (high_z - low_z) != 0 else 0
-            ratio = min(max(ratio, 0), 1)  # Clamp values
-            low_color = (0, 255, 0)
-            high_color = (255, 0, 0)
-            r = int(low_color[0] + ratio * (high_color[0] - low_color[0]))
-            g = int(low_color[1] + ratio * (high_color[1] - low_color[1]))
-            b = int(low_color[2] + ratio * (high_color[2] - low_color[2]))
-            color = (r, g, b)
-            cv2.circle(color_image_saved, (x, y), 3, color, -1)  # Draw point
+            if z <= 1.25 * low_z:
+                color = (0, 255, 0)  # Green
+            elif z >= 0.75 * high_z:
+                color = (255, 0, 0)  # Blue
+            elif z >= 0.85 * mean_z or abs(z) <= 1.15 * mean_z:
+                color = (0, 255, 255)  # Yellow
+            else:
+                color = (0, 0, 0)  # Black (if not matching any condition)
 
+            cv2.circle(color_image_saved, (x, y), 2, color, -1)
 
-        # Keep only blue areas
-        only_blue = color_image_saved.copy()
-
-        # Create mask: find where blue channel is higher than red and green
-        blue_mask = (only_blue[:, :, 0] > only_blue[:, :, 1]) & (only_blue[:, :, 0] > only_blue[:, :, 2])
-
-        # Set non-blue pixels to white
-        only_blue[~blue_mask] = [255, 255, 255]
-
-        # Show the result
-        cv2.imshow("Image", color_image_saved)
-        cv2.imshow("Image with Height Change Contours", only_blue)
-        cv2.imwrite("depth_frame.png", only_blue)
+        # Step 3: Show the image with contours
+        cv2.imshow("Image with Height Change Contours", color_image_saved)
+        cv2.imwrite("depth_frame.png", color_image_saved)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 

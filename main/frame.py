@@ -16,6 +16,7 @@ class Frame:
         self.depth = None
         self.center_x = None
         self.center_y = None
+        self.tag_points = None
 
         # Predefined colors (BGR format for OpenCV)
         self.colors = {
@@ -58,17 +59,39 @@ class Frame:
         if self.axes:
             for label, points in self.axes.items():
                 # Red (X-axis): Bottom-front to bottom-right (front face)
-                cv2.line(self.color, tuple(points[0]), tuple(points[1]), (0, 0, 255), 3)  # X-axis (red)
+                cv2.line(self.color, tuple(points[3]), tuple(points[2]), (0, 0, 255), 3)  # X-axis (red)
                 # Green (Y-axis): Bottom-left to top-left (left face)
-                cv2.line(self.color, tuple(points[0]), tuple(points[3]), (0, 255, 0), 3)  # Y-axis (green)
+                cv2.line(self.color, tuple(points[3]), tuple(points[0]), (0, 255, 0), 3)  # Y-axis (green)
                 # Blue (Z-axis): Bottom-left to top-center (backward direction)
-                cv2.line(self.color, tuple(points[0]), tuple(points[4]), (255, 0, 0), 3)  # Z-axis (blue)
+                cv2.line(self.color, tuple(points[3]), tuple(points[4]), (255, 0, 0), 3)  # Z-axis (blue)
 
         # Draw text in the top-left corner
         if self.text:
-            cv2.putText(self.color, self.text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+            cv2.putText(self.color, self.text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 
                             0.7, (255, 255, 255), 2, cv2.LINE_AA)
+            
+        # Draw text in the top-left corner
+        if self.tag_points:
+            height, width = self.color.shape[:2]
+            font_scale = 0.5
+            thickness = 1
+            font = cv2.FONT_HERSHEY_SIMPLEX
 
+            num_tags = len(self.tag_points)
+
+            for i, p in enumerate(self.tag_points):
+                if p is None or any(v is None for v in p):
+                    continue  # Skip this point completely!
+
+                # Convert numpy ndarray to a list if needed and format the values as floats
+                label = f"{'Lp' if i == 0 else 'Rp'}: {float(p[0]):.2f}, {float(p[1]):.2f}, {float(p[2]):.3f}"
+
+                # Get text size to position properly
+                (text_width, text_height), _ = cv2.getTextSize(label, font, font_scale, thickness)
+                x = width - text_width - 10
+                y = height - 10 - (num_tags - 1 - i) * (text_height + 10)
+                cv2.putText(self.color, label, (x, y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+                
     def get_color(self, color):
         """Returns the BGR color value from name or tuple."""
         if isinstance(color, str):
@@ -144,13 +167,18 @@ class Frame:
             return None, None
 
         # Find extreme left and right points of the cropped contour
-        left_point = tuple(cropped_contour[cropped_contour[:, :, 0].argmin()][0])
-        right_point = tuple(cropped_contour[cropped_contour[:, :, 0].argmax()][0])
+        left_point = tuple(cropped_contour[cropped_contour[:, 0].argmin()])
+        right_point = tuple(cropped_contour[cropped_contour[:, 0].argmax()])
 
         # Compute centroid of the cropped contour
         M = cv2.moments(cropped_contour)
-        centroid_x = int(M["m10"] / M["m00"])
-        centroid_y = int(M["m01"] / M["m00"])
+        if M["m00"] != 0:
+            centroid_x = int(M["m10"] / M["m00"])
+            centroid_y = int(M["m01"] / M["m00"])
+        else:
+            # fallback if invalid
+            centroid_x = (left_point[0] + right_point[0]) // 2
+            centroid_y = (left_point[1] + right_point[1]) // 2
 
         # Calculate the vector from the points to the centroid
         delta_left = (centroid_x - left_point[0], centroid_y - left_point[1])
@@ -160,4 +188,8 @@ class Frame:
         left_point_inside = (int(left_point[0] + 0.1 * delta_left[0]), int(left_point[1] + 0.1 * delta_left[1]))
         right_point_inside = (int(right_point[0] + 0.1 * delta_right[0]), int(right_point[1] + 0.1 * delta_right[1]))
 
-        return left_point_inside, right_point_inside
+        self.points["Left Point"] = (left_point_inside[0], left_point_inside[1], "red")
+        self.points["Right Point"] = (right_point_inside[0], right_point_inside[1], "blue")
+
+        return [left_point_inside, right_point_inside]
+
