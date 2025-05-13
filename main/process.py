@@ -67,12 +67,9 @@ class Process():
                     # Proceed only if pixel_points is valid
                     for id, bot in enumerate([self.bot_left, self.bot_right]):
                         if id < len(self.pixel_points):  # Ensure there's a valid point for each bot
-                            point = self.camera.pixel_to_coordsystem(
-                                bot.tag.orientation, self.pixel_points[id]
-                            )
+                            self.tag_points[id] = self.camera.pixel_to_coordsystem(bot.tag, self.pixel_points[id], adjust_error=True)
 
-                            if point is not None:
-                                self.tag_points[id] = bot.tag.adjust_error(point)
+                            if self.tag_points[id] is not None:
                                 self.state = UnfoldState.PICK_UP
                             else:
                                 print(f"[Error] Invalid point for bot {bot}.")
@@ -81,10 +78,7 @@ class Process():
             elif self.state == UnfoldState.PICK_UP:
                 threads = []
                 for id, bot in enumerate([self.bot_left, self.bot_right]):
-                    point = self.camera.pixel_to_coordsystem(
-                        bot.tag.orientation, self.pixel_points[id]
-                    )
-                    self.tag_points[id] = bot.tag.adjust_error(point)
+                    self.tag_points[id] = self.camera.pixel_to_coordsystem(bot.tag, self.pixel_points[id], adjust_error=True)
                     thread = threading.Thread(target=self.pick_up_object, args=(bot, id))
                     thread.start()
                     threads.append(thread)
@@ -136,12 +130,9 @@ class Process():
                     # Proceed only if pixel_points is valid
                     for id, bot in enumerate([self.bot_left, self.bot_right]):
                         if id < len(self.pixel_points):  # Ensure there's a valid point for each bot
-                            point = self.camera.pixel_to_coordsystem(
-                                bot.tag.orientation, self.pixel_points[id]
-                            )
+                            self.tag_points[id] = self.camera.pixel_to_coordsystem(bot.tag, self.pixel_points[id], adjust_error=True)
 
-                            if point is not None:
-                                self.tag_points[id] = bot.tag.adjust_error(point)
+                            if self.tag_points[id] is not None:
                                 self.state = UnfoldState.PICK_UP
                             else:
                                 print(f"[Error] Invalid point for bot {bot}.")
@@ -170,18 +161,18 @@ class Process():
                 # Trigger the click function from the Camera to get points manually
                 print("[Manual] Click point for left arm")
                 left = self.camera.wait_for_click()
-                self.camera.frame.points["Left Point"] = (left[0], left[1], "red")
+                self.camera.frame.points["Left Point"] = (left[0], left[1], 5, (0, 0, 255))
 
                 print("[Manual] Click point for right arm")
                 right = self.camera.wait_for_click()
-                self.camera.frame.points["Right Point"] = (right[0], right[1], "blue")
+                self.camera.frame.points["Right Point"] = (right[0], right[1], 5, (255, 0, 0))
 
                 # Correct order if needed
                 if left[0] > right[0]:
                     print("[Manual] Points were reversed, swapping them.")
                     left, right = right, left
-                    self.camera.frame.points["Left Point"] = (left[0], left[1], "red")
-                    self.camera.frame.points["Right Point"] = (right[0], right[1], "blue")
+                    self.camera.frame.points["Left Point"] = (left[0], left[1], 5, (0, 0, 255))
+                    self.camera.frame.points["Right Point"] = (right[0], right[1], 5, (255, 0, 0))
 
                 self.pixel_points = [left, right]
                 print("[Manual] Custom pixel points set, returning to PICK_UP.")
@@ -205,19 +196,15 @@ class Process():
                 return UnfoldState.GET_POINTS
 
     def detect_stretched(self):
-        prev_pixel_points = [[0, 0], [0, 0]]
         while True:
-            contours = self.camera.frame.detect_red_objects()
+            contours, _ = self.camera.frame.detect_red_objects()
 
-            if contours:
+            if contours is not None:
                 largest_contour = self.camera.frame.get_largest_contour(contours)
                 
                 if largest_contour is not None:
-                    # Find the nearest points on the contour to the shifted points
-                    diff_x1 = int((self.pixel_points[0][0] - prev_pixel_points[0][0]) * 1.5)
-                    diff_x2 = int((self.pixel_points[1][0] - prev_pixel_points[1][0]) * 0.5)
-                    x1, y1 = (diff_x1 + self.pixel_points[0][0]) + 90, self.pixel_points[0][1] + 100
-                    x2, y2 = (diff_x2 + self.pixel_points[1][0]) - 70, self.pixel_points[1][1] + 100
+                    x1, y1 = (self.pixel_points[0][0]), self.pixel_points[0][1]
+                    x2, y2 = (self.pixel_points[1][0]), self.pixel_points[1][1]
                     
                     prev_pixel_points = self.pixel_points.copy()
                     left_index = np.argmin(
@@ -242,10 +229,10 @@ class Process():
                         chosen_segment = segment2
 
                     # Draw the chosen segment for visualization
-                    self.camera.frame.objects["Object"] = (chosen_segment, "cyan")
+                    self.camera.frame.objects["Object"] = (chosen_segment, (0, 255, 0))
 
-                    self.camera.frame.points["Left Point"] = (x1, y1, "red")
-                    self.camera.frame.points["Right Point"] = (x2, y2, "blue")
+                    self.camera.frame.points["Left Point"] = (x1, y1, 5, (0, 255, 0))
+                    self.camera.frame.points["Right Point"] = (x2, y2, 5, (255, 0, 0))
 
                     # Calculate the line equation: y = mx + c
                     if x2 != x1:
@@ -271,7 +258,7 @@ class Process():
                         if is_straight or self.flag_straight:
                             self.camera.frame.text = "Line is Straight"
                             self.flag_straight = True
-                            self.camera.frame.objects["Object"] = ([], "cyan")
+                            self.camera.frame.objects["Object"] = ([], (0, 0, 0))
                             break
                         else:
                             self.camera.frame.text = "Line is Not Straight"
@@ -328,14 +315,15 @@ class Process():
         self.event_stretch.set()
         while not self.flag_straight:
             x -= stretch_rate
-            self.pixel_points[id] = self.camera.coordsystem_to_pixel(bot.tag.orientation, (x, y, self.pick_up_height))
+            self.pixel_points[id] = self.camera.coordsystem_to_pixel(bot.tag, (x, y, self.pick_up_height))
             bot.arm.set_ee_pose_components(x, y, self.pick_up_height, pitch=1)
 
-            if (id == 0 and self.pixel_points[id][0] < -100) or (id == 1 and self.pixel_points[id][0] > 650):
-                self.flag_straight = True
+            if (id == 0 and self.pixel_points[id][0] < 120) or (id == 1 and self.pixel_points[id][0] > 490):
                 break
-
+        
         self.barrier.wait()
+        self.barrier.wait()
+        self.flag_straight = True
         self.tag_points[id] = (x, y, self.pick_up_height)
 
     def lay_flat_object(self, bot, id, pitch=1):
@@ -352,10 +340,10 @@ class Process():
         bot.arm.set_ee_pose_components(x, y, z, pitch=pitch)
 
         self.barrier.wait()
-        bot.arm.set_ee_pose_components(x, y, 0.1, pitch=pitch)
+        bot.arm.set_ee_pose_components(x, y, 0.2, pitch=pitch)
 
         self.barrier.wait()
-        bot.arm.set_ee_pose_components(x, 0, 0.1, pitch=pitch)
+        bot.arm.set_ee_pose_components(x, 0, 0.2, pitch=pitch)
 
         if id == 0:
             y = -0.1
@@ -363,7 +351,7 @@ class Process():
             y = 0.1
 
         self.barrier.wait()
-        bot.arm.set_ee_pose_components(x, y, 0.1, pitch=pitch)
+        bot.arm.set_ee_pose_components(x, y, 0.2, pitch=pitch)
 
         if id == 0:
             y = -0.4
@@ -371,6 +359,6 @@ class Process():
             y = 0.4
 
         self.barrier.wait()
-        bot.arm.set_ee_pose_components(x, y, 0.1, pitch=pitch)
+        bot.arm.set_ee_pose_components(x, y, 0.2, pitch=pitch)
         
         self.set_bot_sleep(bot)

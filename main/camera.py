@@ -14,6 +14,7 @@ from frame import Frame
 class Camera:
     """Handles RealSense camera initialization and continuous frame fetching."""
     def __init__(self):
+        # ---- Camera Initialization ----
         # RealSense pipeline and configuration
         self.pipeline = rs.pipeline()
         config = rs.config()
@@ -37,6 +38,12 @@ class Camera:
                           [0, 0, 1]])
         self.dist_coeffs = np.array(self.color_intrinsics.coeffs)
 
+        # Compute extrinsics (depth-to-color)
+        self.depth_to_color_extrinsics = depth_stream.get_extrinsics_to(color_stream)
+        self.extrinsics_rotation = np.array(self.depth_to_color_extrinsics.rotation).reshape(3, 3)
+        self.extrinsics_translation = np.array(self.depth_to_color_extrinsics.translation).reshape(3, 1)
+        self.extrinsics_matrix = np.hstack((self.extrinsics_rotation, self.extrinsics_translation))
+
         self.depth_sensor = self.profile.get_device().first_depth_sensor()
         self.depth_scale = self.depth_sensor.get_depth_scale()
         # Get the device
@@ -55,7 +62,8 @@ class Camera:
 
         # Set depth sensor preset
         self.depth_sensor.set_option(rs.option.visual_preset, 5)
-
+        
+        # ---- Variable Initialization ----
         self.manual_mode = False
         self.key = None
         self.frame = Frame()  # Initialize a frame object
@@ -69,7 +77,7 @@ class Camera:
 
     def update_frames(self):
         """Continuously fetch frames and display them with outlines and points."""
-        while True:
+        while self.running:
             frames = self.pipeline.wait_for_frames()
             aligned_frames = self.align.process(frames)
             self.frame.color = aligned_frames.get_color_frame()
@@ -111,6 +119,7 @@ class Camera:
 
     def stop(self):
         """Stops the camera stream and thread."""
+        self.running = False
         self.frame.close()
         self.pipeline.stop()
 
@@ -140,13 +149,13 @@ class Camera:
 
         return np.median(depth_values) if depth_value else 0
 
-    def pixel_to_coordsystem(self, orientation, point_pixel):
+    def pixel_to_coordsystem(self, tag, point_pixel, adjust_error = False):
         """Convert pixel coordinates from the camera into the coordinate system of one of the robot arms."""
         if point_pixel is None:
             print("[Error] pixel_to_coordsystem: Received None as point_pixel")
             return None
 
-        rvec, tvec = orientation
+        rvec, tvec = tag.orientation
         rmat, _ = cv2.Rodrigues(rvec)
 
         # Handle the case where point_pixel contains 2 or 3 values
@@ -173,40 +182,47 @@ class Camera:
         point_camera = np.array([[X_camera], [Y_camera], [Z_camera]])
 
         # Transform camera coordinates to AprilTag coordinates
-        point = np.dot(rmat.T, (point_camera - tvec)) 
+        point = np.dot(rmat.T, (point_camera - tvec))
+
+        if adjust_error:
+            point = tag.adjust_error(point)
+
         return point
 
-    def coordsystem_to_pixel(self, orientation, point):
-        """Convert a point from the robot arm's coordinate system to pixel coordinates in the camera's image."""
-        # Extract rotation (rvec) and translation (tvec) from orientation
-        rvec, tvec = orientation
+    def coordsystem_to_pixel(self, tag, point_tag):
+        """Convert a 3D point in the AprilTag frame to a pixel coordinate in the camera frame."""
 
-        # Convert rotation vector to rotation matrix
+        if point_tag is None or len(point_tag) != 3:
+            print("[Error] coordsystem_to_pixel: Invalid input:", point_tag)
+            return None
+
+        # Ensure point is a NumPy array and undo any depth correction
+        point_tag = np.array(point_tag)
+        point_tag_corrected = tag.reverse_adjust_error(point_tag.copy())
+
+        # Get tag pose
+        rvec, tvec = tag.orientation
         rmat, _ = cv2.Rodrigues(rvec)
 
-        # Ensure point is a column vector
-        point = np.array(point).reshape(3, 1)
+        # Transform point from tag frame to camera frame
+        point_tag_reshaped = point_tag_corrected.reshape((3, 1))
+        point_camera = rmat @ point_tag_reshaped + tvec
+        Xc, Yc, Zc = point_camera.flatten()
 
-        # Transform point from robot coordinates to camera coordinates
-        point_camera = np.dot(rmat, point) + tvec  # point_camera should be a 3D vector
+        if Zc <= 0:
+            print("[Error] coordsystem_to_pixel: Invalid Z-camera:", Zc)
+            return None
 
-        point_camera = point_camera.flatten()
-
-        # Extract camera coordinates (X_camera, Y_camera, Z_camera)
-        X_camera, Y_camera, Z_camera = point_camera
-
-        # Camera intrinsic parameters
+        # Camera intrinsics
         fx, fy = self.color_intrinsics.fx, self.color_intrinsics.fy
         cx, cy = self.color_intrinsics.ppx, self.color_intrinsics.ppy
 
-        # Convert from camera coordinates to pixel coordinates using the camera intrinsic matrix
-        pixel_x = (fx * X_camera / Z_camera) + cx
-        pixel_y = (fy * Y_camera / Z_camera) + cy
-        pixel_point = np.array([int(round(pixel_x)), int(round(-pixel_y))])
+        # Project to 2D pixel
+        u = Xc * fx / Zc + cx
+        v = Yc * fy / Zc + cy
 
-        return pixel_point # [int(round(pixel_x)), int(round(pixel_y))]
+        return np.array([int(round(u)), int(round(v))])
 
-    
     def get_orientation(self, side=None):
         """Get orientation and translation relative to camera"""
 
