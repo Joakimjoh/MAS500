@@ -135,9 +135,7 @@ class Camera:
         self.clicked_point = None
         cv2.setMouseCallback(self.frame.title, self.mouse_callback)
         while self.clicked_point is None:
-            if self.key == 27:  # ESC for å avbryte
-                print("[INFO] Click cancelled by user")
-                break
+            pass
         
         return self.clicked_point
 
@@ -155,7 +153,6 @@ class Camera:
     def pixel_to_coordsystem(self, tag, point_pixel, adjust_error = False):
         """Convert pixel coordinates from the camera into the coordinate system of one of the robot arms."""
         if point_pixel is None:
-            print("[Error] pixel_to_coordsystem: Received None as point_pixel")
             return None
 
         rvec, tvec = tag.orientation
@@ -170,7 +167,6 @@ class Camera:
             x, y, z = point_pixel
 
         else:
-            print("[Error] pixel_to_coordsystem: Invalid point_pixel format:", point_pixel)
             return None
 
         # Camera intrinsic parameters
@@ -196,7 +192,6 @@ class Camera:
         """Convert a 3D point in the AprilTag frame to a pixel coordinate in the camera frame."""
 
         if point_tag is None or len(point_tag) != 3:
-            print("[Error] coordsystem_to_pixel: Invalid input:", point_tag)
             return None
 
         # Ensure point is a NumPy array and undo any depth correction
@@ -213,7 +208,6 @@ class Camera:
         Xc, Yc, Zc = point_camera.flatten()
 
         if Zc <= 0:
-            print("[Error] coordsystem_to_pixel: Invalid Z-camera:", Zc)
             return None
 
         # Camera intrinsics
@@ -351,7 +345,6 @@ class Camera:
         #z_values = z_values[z_values > 0]
 
         if len(z_values) == 0:
-            print("No valid depth points found.")
             return color_image
 
         low_z = np.min(z_values)

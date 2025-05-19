@@ -46,9 +46,8 @@ class Tag:
     def get_linear_reg_error(self, point_xy):
         input_array = np.array(point_xy).reshape(1, -1)
 
-        # 🔐 Sanitize input
+        # Sanitize input
         if np.any(np.isnan(input_array)) or np.any(np.isinf(input_array)):
-            print(f"⚠️ Skipping regression prediction due to invalid input: {input_array}")
             return 0  # or None or float("nan")
 
         z_pred = self.model.predict(input_array)
