@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from scipy.spatial.distance import cdist
 
 # === Load and clean data ===
-df = pd.read_csv('C:/Users/joaki/Documents/sd/model_fit/depth_data_without_error_model7.csv')
+df = pd.read_csv('/home/student/Documents/MAS500_github/MAS500/model_fit/depth_data_without_error_model7.csv')
 x = df['x (m)'].str.strip('[]').astype(float).values
 y = df['y (m)'].str.strip('[]').astype(float).values
 z = df['z (m)'].str.strip('[]').astype(float).values
