@@ -42,7 +42,7 @@ pip install -r requirements.txt
 ## Hardware Requirements
 Two Interbotix manipulators (e.g., WX250s)
 
-Intel RealSense camera (e.g., D515)
+Intel RealSense camera (L515)
 
 AprilTags printed and placed in camera view
 
