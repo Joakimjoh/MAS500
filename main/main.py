@@ -15,17 +15,21 @@ rclpy.init()
 # Start OpenCV window thread
 cv2.startWindowThread()
 
-
 # Initialize camera
 camera = Camera()
 while camera.frame is None:
     pass  # Wait for first valid frame
 
 # Check if calibration files exist 
-if not os.path.exists("region.csv") or not os.path.exists("empty_workspace.png"):
-    print("Missing calibration file(s). Clear the workspace and press Enter to Continue.")
+if not os.path.exists("region.csv") or not os.path.exists("empty_workspace.png") or not os.path.exists("error_model_left.joblib") or not os.path.exists("error_model_right.joblib"):
+    camera.frame.text = "Missing calibration file(s). Clear the workspace and press Enter to continue"
     while camera.key != 13:
         pass
+    camera.frame.text = ""
+
+# Save background image calibration
+if not os.path.exists("empty_workspace.png"):
+    camera.frame.save_image()
 
 # Initialize dual-arm robots with AprilTag references
 bot_left = InterbotixManipulatorXS(
@@ -51,16 +55,21 @@ process_count = 1
 processes = {}
 
 while True:
-    print("Press Enter to start unfolding process...")
+    camera.frame.text = "Press Enter to start unfolding process"
     
     # Wait for Enter key (key code 13)
     while camera.key != 13:
         pass
 
-    print(f"\nStarting unfolding process {process_count}")
+    camera.frame.text = f"Starting unfolding process {process_count}"
     process = Process(camera, bot_left, bot_right)
     processes[process_count] = process
     process.unfold()
-    print(f"Process {process_count} finished.")
+    camera.frame.text = f"Process {process_count} finished"
+
+    if hasattr(process, "terminate"):
+        process.terminate()
+    elif hasattr(process, "cleanup"):
+        process.cleanup()
     
     process_count += 1

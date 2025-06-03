@@ -14,6 +14,9 @@ from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
 from interbotix_xs_modules.xs_robot import mr_descriptions as mrd
 from sensor_msgs.msg import JointState
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from builtin_interfaces.msg import Duration
+from rclpy.constants import S_TO_NS
 import math
 import sys
 from threading import Lock
@@ -380,6 +383,54 @@ class InterbotixArmXSInterface:
         self.core.get_logger().warn('No valid pose could be found. Will not execute')
         return theta_list, False
     
+    # SELFMADE
+    def max_reach_outline(self, num_samples: int = 1000) -> List[List[float]]:
+        """
+        Approximate the reachable boundary using inverse kinematics with random pose targets.
+
+        :param num_samples: Number of random Cartesian poses to try
+        :return: List of [x, y, z] points that were reachable via IK
+        """
+        boundary_points = []
+        lower = np.array(self.group_info.joint_lower_limits)
+        upper = np.array(self.group_info.joint_upper_limits)
+
+        for _ in range(num_samples):
+            # Generate a random valid joint config within joint limits
+            joint_guess = np.random.uniform(lower, upper)
+
+            # Forward kinematics to get a random reachable pose
+            T_target = mr.FKinSpace(self.robot_des.M, self.robot_des.Slist, joint_guess)
+
+            # Attempt to recover the joint angles with IK
+            theta_list, success = mr.IKinSpace(
+                Slist=self.robot_des.Slist,
+                M=self.robot_des.M,
+                T=T_target,
+                thetalist0=joint_guess,
+                eomg=0.001,
+                ev=0.001
+            )
+
+            # If successful and within limits, accept the position
+            if success and self._check_joint_limits(theta_list):
+                x, y, z = T_target[0, 3], T_target[1, 3], T_target[2, 3]
+                boundary_points.append([x, y, z])
+
+        return boundary_points
+    
+    # SELFMADE
+    def max_reach_radius(self, num_samples: int = 1000) -> float:
+        """
+        Estimate the maximum radial distance (in XY-plane) the robot's end-effector can reach.
+
+        :param num_samples: Number of random joint configurations to sample
+        :return: Maximum distance from origin in the XY-plane
+        """
+        boundary_points = self.max_reach_outline(num_samples)
+        max_radius = max(np.hypot(x, y) for x, y, z in boundary_points)
+        return max_radius
+    
     def _wrap_theta_list(self, theta_list: List[np.ndarray]) -> List[np.ndarray]:
         theta_list = (theta_list + np.pi) % REV - np.pi
         for x in range(len(theta_list)):
@@ -504,6 +555,207 @@ class InterbotixArmXSInterface:
         return self.set_ee_pose_matrix(
             T_sd, custom_guess, execute, moving_time, accel_time, blocking
         )
+    
+    def set_ee_cartesian_trajectory(
+        self,
+        x: float = 0,
+        y: float = 0,
+        z: float = 0,
+        roll: float = 0,
+        pitch: float = 0,
+        yaw: float = 0,
+        moving_time: float = None,
+        wp_moving_time: float = 0.2,
+        wp_accel_time: float = 0.1,
+        wp_period: float = 0.05,
+    ) -> bool:
+        """
+        Command a linear displacement to the end effector.
+
+        :param x: (optional) linear displacement along the X-axis w.r.t. `T_sy` [m]
+        :param y: (optional) linear displacement along the Y-axis w.r.t. `T_sy` [m]
+        :param z: (optional) linear displacement along the Z-axis w.r.t. `T_sy` [m]
+        :param roll: (optional) angular displacement around the X-axis w.r.t. `T_sy` [rad]
+        :param pitch: (optional) angular displacement around the Y-axis w.r.t. `T_sy` [rad]
+        :param yaw: (optional) angular displacement around the Z-axis w.r.t. `T_sy` [rad]
+        :param moving_time: (optional) duration in seconds that the robot should move
+        :param wp_moving_time: (optional) duration in seconds that each waypoint in the trajectory
+            should move
+        :param wp_accel_time: (optional) duration in seconds that each waypoint in the trajectory
+            should be accelerating/decelerating (must be equal to or less than half of
+            `wp_moving_time`)
+        :param wp_period: (optional) duration in seconds between each waypoint
+        :return: `True` if a trajectory was successfully planned and executed; otherwise `False`
+        :details: `T_sy` is a 4x4 transformation matrix representing the pose of a virtual frame
+            w.r.t. /<robot_name>/base_link. This virtual frame has the exact same `x`, `y`, `z`,
+            `roll`, and `pitch` of /<robot_name>/base_link but contains the `yaw` of the end
+            effector frame (/<robot_name>/ee_gripper_link).
+        :details: Note that `y` and `yaw` must equal 0 if using arms with less than 6dof.
+        """
+        self.core.get_logger().debug(
+            (
+                f'Setting ee trajectory to components=\n'
+                f'\tx={x}\n'
+                f'\ty={y}\n'
+                f'\tz={z}\n'
+                f'\troll={roll}\n'
+                f'\tpitch={pitch}\n'
+                f'\tyaw={yaw}'
+            )
+        )
+        if self.group_info.num_joints < 6 and (y != 0 or yaw != 0):
+            self.core.get_logger().warn(
+                (
+                    "Please leave the 'y' and 'yaw' fields at '0' when working with arms that have"
+                    ' fewer than 6dof.'
+                )
+            )
+            return False
+        rpy = ang.rotation_matrix_to_euler_angles(self.T_sb[:3, :3])
+        T_sy = np.identity(4)
+        T_sy[:3, :3] = ang.euler_angles_to_rotation_matrix([0.0, 0.0, rpy[2]])
+        T_yb = np.dot(mr.TransInv(T_sy), self.T_sb)
+        rpy[2] = 0.0
+        if moving_time is None:
+            moving_time = self.moving_time
+        accel_time = self.accel_time
+        N = int(moving_time / wp_period)
+        inc = 1.0 / float(N)
+        joint_traj = JointTrajectory()
+        joint_positions = [float(cmd) for cmd in self.joint_commands]
+        for i in range(N + 1):
+            joint_traj_point = JointTrajectoryPoint()
+            joint_traj_point.positions = tuple(joint_positions)
+            joint_traj_point.time_from_start = Duration(
+                nanosec=int(i * wp_period * S_TO_NS)
+            )
+            joint_traj.points.append(joint_traj_point)
+            if i == N:
+                break
+            T_yb[:3, 3] += [inc * x, inc * y, inc * z]
+            rpy[0] += inc * roll
+            rpy[1] += inc * pitch
+            rpy[2] += inc * yaw
+            T_yb[:3, :3] = ang.euler_angles_to_rotation_matrix(rpy)
+            T_sd = np.dot(T_sy, T_yb)
+            theta_list, success = self.set_ee_pose_matrix(
+                T_sd, joint_positions, False, blocking=False
+            )
+            if success:
+                joint_positions = theta_list
+            else:
+                self.core.get_logger().warn(
+                    (
+                        f'{(i / float(N) * 100):.2f}% of trajectory successfully planned. '
+                        'Trajectory will not be executed.'
+                    )
+                )
+                break
+
+        if success:
+            self.set_trajectory_time(wp_moving_time, wp_accel_time)
+            joint_traj.joint_names = self.group_info.joint_names
+            current_positions = []
+            with self.core.js_mutex:
+                for name in joint_traj.joint_names:
+                    current_positions.append(
+                        self.core.joint_states.position[self.core.js_index_map[name]]
+                    )
+            joint_traj.points[0].positions = current_positions
+            joint_traj.header.stamp = self.core.get_clock().now().to_msg()
+            self.core.pub_traj.publish(
+                JointTrajectoryCommand(
+                    cmd_type='group', name=self.group_name, traj=joint_traj
+                )
+            )
+            time.sleep(moving_time + wp_moving_time)
+            self.T_sb = T_sd
+            self.joint_commands = joint_positions
+            self.set_trajectory_time(moving_time, accel_time)
+
+        return success
+    
+    def plan_ee_cartesian_trajectory_only(
+        self,
+        x: float = 0,
+        y: float = 0,
+        z: float = 0,
+        roll: float = 0,
+        pitch: float = 0,
+        yaw: float = 0,
+        moving_time: float = None,
+        wp_moving_time: float = 0.2,
+        wp_accel_time: float = 0.1,
+        wp_period: float = 0.05,
+    ) -> Union[JointTrajectory, None]:
+        """
+        Plan a linear end-effector trajectory and return it without executing.
+        """
+        self.core.get_logger().debug(
+            (
+                f'Planning ee trajectory to components=\n'
+                f'\tx={x}\n'
+                f'\ty={y}\n'
+                f'\tz={z}\n'
+                f'\troll={roll}\n'
+                f'\tpitch={pitch}\n'
+                f'\tyaw={yaw}'
+            )
+        )
+        if self.group_info.num_joints < 6 and (y != 0 or yaw != 0):
+            self.core.get_logger().warn(
+                "For arms with <6 DOF, 'y' and 'yaw' must be 0."
+            )
+            return None
+
+        rpy = ang.rotation_matrix_to_euler_angles(self.T_sb[:3, :3])
+        T_sy = np.identity(4)
+        T_sy[:3, :3] = ang.euler_angles_to_rotation_matrix([0.0, 0.0, rpy[2]])
+        T_yb = np.dot(mr.TransInv(T_sy), self.T_sb)
+        rpy[2] = 0.0
+
+        if moving_time is None:
+            moving_time = self.moving_time
+
+        N = int(moving_time / wp_period)
+        inc = 1.0 / float(N)
+
+        joint_traj = JointTrajectory()
+        joint_positions = [float(cmd) for cmd in self.joint_commands]
+
+        for i in range(N + 1):
+            joint_traj_point = JointTrajectoryPoint()
+            joint_traj_point.positions = tuple(joint_positions)
+            joint_traj_point.time_from_start = Duration(
+                nanosec=int(i * wp_period * S_TO_NS)
+            )
+            joint_traj.points.append(joint_traj_point)
+
+            if i == N:
+                break
+
+            T_yb[:3, 3] += [inc * x, inc * y, inc * z]
+            rpy[0] += inc * roll
+            rpy[1] += inc * pitch
+            rpy[2] += inc * yaw
+            T_yb[:3, :3] = ang.euler_angles_to_rotation_matrix(rpy)
+            T_sd = np.dot(T_sy, T_yb)
+
+            theta_list, success = self.set_ee_pose_matrix(
+                T_sd, joint_positions, execute=False, blocking=False
+            )
+            if success:
+                joint_positions = theta_list
+            else:
+                self.core.get_logger().warn(
+                    f'{(i / float(N) * 100):.2f}% of trajectory successfully planned. Returning partial trajectory.'
+                )
+                return None
+
+        joint_traj.joint_names = self.group_info.joint_names
+        joint_traj.header.stamp = self.core.get_clock().now().to_msg()
+
+        return joint_traj
     
 class InterbotixGripperXS:
     """Standalone Module to control an Interbotix Gripper using PWM or Current control."""
