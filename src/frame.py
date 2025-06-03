@@ -3,8 +3,11 @@ import math
 import cv2
 
 class Frame:
-    """Represents a frame with multiple outlines, points, title, and text."""
     def __init__(self):
+        """
+        Initialize the frame with default attributes for display, overlays,
+        geometric annotations, and internal image buffers.
+        """
         self.title = "RealSense Camera"  # Default window title
         self.text = ""  # List of text to display in the top-left corner
         self.text_mode = ""
@@ -32,6 +35,10 @@ class Frame:
         cv2.destroyAllWindows()
 
     def populate(self):
+        """
+        Draw all visual elements onto the frame including:
+        contours, polylines, labeled points, 3D axes, status text, and tag coordinates.
+        """
         # Draw all outlines with their colors
         if self.objects:
             for label, (object, color_code) in self.objects.items():
@@ -106,6 +113,14 @@ class Frame:
             print("No image to save.")
     
     def detect_largest_object(self, min_area: int = 2000):
+        """
+        Detect the largest changed object in the scene by subtracting
+        the background image. Applies thresholding and contour filtering
+        based on area and intensity difference.
+
+        :param min_area: Minimum area in pixels to consider as valid object
+        :return: The largest contour and binary mask, or (None, None) if not found
+        """
         background_path = 'empty_workspace.png'
         background_img = cv2.imread(background_path)
 
@@ -167,6 +182,13 @@ class Frame:
         return None, None
 
     def get_left_right_point(self, percentage: int = 100):
+        """
+        Find and return the inner-left and inner-right points of the top part
+        of the largest contour, based on a percentage of its height.
+
+        :param percentage: How much of the contour height to consider (default 100%)
+        :return: List of two inner points [left_point, right_point] or None if not found
+        """
         detected_contour, _ = self.detect_largest_object()
         if detected_contour is None:
             return None, None

@@ -10,6 +10,10 @@ from camera import Camera
 
 class Tag:
     def __init__(self, camera: Camera, side: str) -> None:
+        """
+        Initialize the Tag object for a specific camera side.
+        Retrieves orientation and loads or trains the error correction model.
+        """
         self.camera = camera
         self.side = side
         self.orientation = camera.get_orientation(side)
@@ -24,6 +28,10 @@ class Tag:
         self.load_or_train_model()
 
     def get_region_data(self):
+        """
+        Load region sample data from CSV file.
+        If file doesn't exist, calls camera to create it.
+        """
         if not os.path.exists("region.csv"):
             self.camera.create_sample_region()
 
@@ -37,6 +45,10 @@ class Tag:
         return region_data
 
     def load_or_train_model(self):
+        """
+        Load an existing error correction model or train a new one
+        using region sample data and a combination of polynomial and RBF features.
+        """
         model_path = f"error_model_{self.side}.joblib"
 
         if os.path.exists(model_path):
@@ -84,6 +96,9 @@ class Tag:
         self.rbf_centers = np.vstack([xc.ravel(), yc.ravel()]).T
 
         def rbf_features(X):
+            """
+            Generate RBF feature matrix for input X.
+            """
             dist = cdist(X, self.rbf_centers, 'sqeuclidean')
             return np.exp(-dist / (2 * self.rbf_sigma ** 2))
 
@@ -116,6 +131,9 @@ class Tag:
         }, model_path)
 
     def get_linear_reg_error(self, point_xy):
+        """
+        Predict the error correction for a 2D input point using the trained model.
+        """
         point_xy = np.array(point_xy).reshape(1, -1)
         input_xy = self.scaler_xy.transform(point_xy)
         poly_feat = self.poly.transform(input_xy)
@@ -126,18 +144,28 @@ class Tag:
         return self.scaler_z.inverse_transform(z_norm).ravel()[0]
 
     def adjust_error(self, point):
+        """
+        Apply learned correction to a 3D point by adjusting the z-coordinate.
+        """
         if point is None or not np.isfinite(point).all():
             return point
         point[2] -= self.get_linear_reg_error(point[:2])
         return point
 
     def reverse_adjust_error(self, point):
+        """
+        Undo error correction from a previously adjusted 3D point.
+        """
         if point is None or not np.isfinite(point).all():
             return point
         point[2] += self.get_linear_reg_error(point[:2])
         return point
     
     def batch_adjust_error(self, points):
+        """
+        Apply error correction to an array of 3D points (Nx3).
+        Only adjusts valid (finite) points.
+        """
         points = np.asarray(points)
 
         # === Validate input ===

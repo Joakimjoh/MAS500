@@ -16,8 +16,10 @@ from frame import Frame
 class Camera:
     """Handles RealSense camera initialization and continuous frame fetching."""
     def __init__(self):
-        # ---- Camera Initialization ----
-        # RealSense pipeline and configuration
+        """
+        Initialize the RealSense camera, configure stream settings,
+        compute camera intrinsics/extrinsics, and start a thread for real-time frame updates.
+        """
         self.pipeline = rs.pipeline()
         config = rs.config()
         config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
@@ -90,7 +92,10 @@ class Camera:
         self.thread.join(timeout=2)
 
     def update_frames(self):
-        """Continuously fetch frames and display them with outlines and points."""
+        """
+        Continuously fetch aligned color and depth frames,
+        populate overlays if in manual mode, and display the frame with user interaction.
+        """
         while self.running:
             frames = self.pipeline.wait_for_frames()
             aligned_frames = self.align.process(frames)
@@ -130,17 +135,25 @@ class Camera:
                 break
 
     def stop(self):
-        """Stops the camera stream and thread."""
+        """
+        Stop the RealSense pipeline and close any display windows.
+        """
         self.running = False
         self.frame.close()
         self.pipeline.stop()
 
     def mouse_callback(self, event, x, y, flags, param):
+        """
+        Internal OpenCV mouse callback to capture click coordinates.
+        """
         if event == cv2.EVENT_LBUTTONDOWN:
             self.clicked_point = (x, y)
 
     def wait_for_click(self):
-        """Wait for a mouse click on the existing frame."""
+        """
+        Block execution until a mouse click is detected on the frame window,
+        then return the clicked (x, y) pixel location.
+        """
         self.clicked_point = None
         cv2.setMouseCallback(self.frame.title, self.mouse_callback)
         while self.clicked_point is None:
@@ -149,8 +162,14 @@ class Camera:
         return self.clicked_point
 
     def get_depth(self, point, depth_image=None):
-        """Get depth using 5x5 area repeated 12 times with trimmed mean.
-        Uses provided depth_image if available, else falls back to live depth frame."""
+        """
+        Retrieve depth at a pixel location using either the provided depth image
+        or the live depth stream. Applies a correction offset.
+
+        :param point: (x, y) pixel coordinate
+        :param depth_image: Optional numpy depth array
+        :return: Depth in meters, or 0 if unavailable
+        """
         
         px, py = point
         # Use depth_image if given, else fallback to live API
@@ -170,7 +189,14 @@ class Camera:
                     
 
     def pixel_to_coordsystem(self, tag, point_pixel, adjust_error = False):
-        """Convert pixel coordinates from the camera into the coordinate system of one of the robot arms."""
+        """
+        Convert a 2D pixel point to a 3D point in the AprilTag coordinate system.
+
+        :param tag: AprilTag object containing pose
+        :param point_pixel: (x, y) or (x, y, z) point in pixel space
+        :param adjust_error: Whether to apply learned error correction
+        :return: 3D point in tag frame or None
+        """
         if point_pixel is None:
             return None
 
@@ -208,7 +234,13 @@ class Camera:
         return point
 
     def coordsystem_to_pixel(self, tag, point_tag):
-        """Convert a 3D point in the AprilTag frame to a pixel coordinate in the camera frame."""
+        """
+        Project a 3D point in AprilTag frame to pixel coordinates in the camera image.
+
+        :param tag: AprilTag object
+        :param point_tag: (x, y, z) point in tag frame
+        :return: 2D pixel coordinate or None
+        """
 
         if point_tag is None or len(point_tag) != 3:
             return None
@@ -240,7 +272,13 @@ class Camera:
         return np.array([int(round(u)), int(round(v))])
     
     def get_orientation(self, side=None):
-        """Get orientation and translation of AprilTag relative to camera using pupil-apriltags"""
+        """
+        Detect AprilTags in the image and estimate pose of a specified tag.
+        Applies optional corrections for tag position and visualizes axes.
+
+        :param side: 'left', 'right', or None to auto-select
+        :return: Tuple (rotation_vector, translation_vector) or None if not found
+        """
 
         tag_size = 1 # set as unitless
 
@@ -345,7 +383,10 @@ class Camera:
         return rvec, tvec_real
     
     def create_sample_region(self):
-        """Get pixel and depth points of a region 50% the size of the frame"""
+        """
+        Sample a central region of the color+depth image (50% size),
+        retrieve depth for each pixel, and save data to a CSV file.
+        """
         # Image dimensions
         img_height, img_width, _ = self.frame.color.shape
 
@@ -377,6 +418,14 @@ class Camera:
             writer.writerows(region_data)
 
     def get_depth_map_object(self, bot_left, bot_right):
+        """
+        Create a color-coded depth map of the largest detected object
+        using 3D triangulation from both robot arms’ camera perspectives.
+
+        :param bot_left: Left robot arm object
+        :param bot_right: Right robot arm object
+        :return: Color image with depth encoding or original image on failure
+        """
         _, mask = self.frame.detect_largest_object()
         color_image = self.frame.color_standard.copy()
         depth_image = np.asanyarray(self.frame.depth.get_data())
