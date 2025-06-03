@@ -28,8 +28,9 @@ This project implements a dual-arm robotic system for automatic textile unfoldin
 | `dual_arm_xs.py`                  | Custom Interbotix wrapper for synchronized dual-arm control |
 | `machine_learning.ipynb`          | Jupyter notebook for training and evaluating depth correction models |
 | `region.csv`                      | Sampled training data (auto-generated on first run) |
-| `error_model_left.joblib`         | Left arm's trained depth correction model (auto-generated) |
-| `error_model_right.joblib`        | Right arm's trained depth correction model (auto-generated) |
+| `error_model_left.joblib`         | Left arm's trained depth correction model |
+| `error_model_right.joblib`        | Right arm's trained depth correction model |
+| `empty_workspace.png`             | Image of empty workspace used for textile detection |
 | `best.pt`                         | Machine learning model to detect folds |
 | `requirements.txt`                | Python dependencies |
 
